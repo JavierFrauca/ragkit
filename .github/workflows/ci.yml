@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore RagKit.slnx
+      - name: Build
+        run: dotnet build RagKit.slnx -c Release --no-restore
+      - name: Test
+        # Integration tests (Qdrant/Postgres/SQL Server/ONNX/LLM) self-skip when
+        # their service/model/key isn't present, so CI runs the offline suite.
+        run: dotnet test RagKit.slnx -c Release --no-build
+      - name: Pack
+        run: dotnet pack RagKit.slnx -c Release -o artifacts --no-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts/*.nupkg

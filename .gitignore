@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+.vs/
+ragkit-data/
+artifacts/
+.qdrant/
+.models/
+.pgdata/
+.ollama/
+
+# Example run logs
+examples/**/.run.*

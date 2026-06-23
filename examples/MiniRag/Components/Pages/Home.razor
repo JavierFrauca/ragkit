@@ -1,0 +1,214 @@
+@page "/"
+@rendermode InteractiveServer
+@inject Rag Rag
+
+@*
+    MiniRag — una sola pantalla con dos paneles:
+      ① Ingestar documentos (pegar texto o subir PDF/DOCX/txt)
+      ② Chat sobre esos documentos (respuesta en streaming + citas)
+
+    Toda la lógica de RAG está en Rag.cs. Aquí solo hay UI + estado de pantalla.
+*@
+
+<PageTitle>MiniRag</PageTitle>
+
+<header class="topbar">
+    <div class="brand">
+        <span class="logo">◆</span>
+        <div>
+            <h1>MiniRag</h1>
+            <p>RAG local con <b>Ollama</b> · qwen2.5:7b + nomic-embed-text · en 4 líneas</p>
+        </div>
+    </div>
+    <div class="status">
+        @if (Rag.Ready)
+        {
+            <span class="badge ok">● Conectado</span>
+            <span class="chips">@Rag.Docs.Count docs · @Rag.ChunkCount fragmentos</span>
+        }
+        else
+        {
+            <span class="badge off">● Ollama no disponible</span>
+        }
+    </div>
+</header>
+
+@if (!Rag.Ready)
+{
+    @* Ayuda de arranque si Ollama no responde o faltan los modelos. *@
+    <div class="hint">
+        <b>Para arrancar:</b> instala <a href="https://ollama.com" target="_blank">Ollama</a> y ejecuta una vez:
+        <pre>ollama pull qwen2.5:7b
+ollama pull nomic-embed-text</pre>
+        @if (!string.IsNullOrEmpty(Rag.Error)) { <div class="err">@Rag.Error</div> }
+        <button @onclick="Retry">Reintentar conexión</button>
+    </div>
+}
+
+<div class="grid">
+
+    <!-- ─────────────  PANEL ①: INGESTAR  ───────────── -->
+    <section class="card">
+        <h2><span class="num">1</span> Ingestar documentos</h2>
+
+        <label>Texto</label>
+        <textarea @bind="_text" rows="7" placeholder="Pega aquí el contenido de un documento…"></textarea>
+
+        <label>Nombre / fuente</label>
+        <input @bind="_source" placeholder="p. ej. manual.txt" />
+
+        <button class="primary" disabled="@(!Rag.Ready || _ingesting)" @onclick="IngestText">
+            @(_ingesting ? "Ingestando…" : "Ingestar texto")
+        </button>
+
+        <div class="or">— o sube un fichero (PDF / DOCX / TXT) —</div>
+        <InputFile OnChange="IngestFile" disabled="@(!Rag.Ready || _ingesting)" />
+
+        @if (_ingMsg is not null) { <div class="@(_ingOk ? "ok-msg" : "err")">@_ingMsg</div> }
+
+        @if (Rag.Docs.Count > 0)
+        {
+            <h3>Indexados</h3>
+            <ul class="docs">
+                @foreach (var d in Rag.Docs)
+                {
+                    <li><span class="file">📄 @d.Source</span> <span class="cnt">@d.Chunks frag.</span></li>
+                }
+            </ul>
+        }
+    </section>
+
+    <!-- ─────────────  PANEL ②: CHAT  ───────────── -->
+    <section class="card chat">
+        <h2><span class="num">2</span> Chat sobre tus documentos</h2>
+
+        @* Prompt de sistema editable (RagKit lo admite vía OneShotPrompt). *@
+        <details class="prompt">
+            <summary>⚙ Prompt del sistema (editable)</summary>
+            <textarea @bind="Rag.SystemPrompt" rows="6" spellcheck="false"></textarea>
+            <button class="ghost" @onclick="Rag.ResetPrompt">Restaurar ejemplo</button>
+        </details>
+
+        <div class="messages">
+            @if (_msgs.Count == 0)
+            {
+                <div class="empty">Ingiere algún documento y pregunta lo que quieras 👇</div>
+            }
+            @foreach (var m in _msgs)
+            {
+                <div class="msg @m.Role">
+                    @if (m.Role == "assistant" && m.Text.Length == 0)
+                    {
+                        @* Aún no ha llegado el primer token: "pensando…" animado. *@
+                        <div class="bubble thinking">
+                            <span>pensando</span>
+                            <span class="dots"><i></i><i></i><i></i></span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="bubble">@m.Text</div>
+                    }
+                    @if (m.Citations.Count > 0 && m.Text.Length > 0)
+                    {
+                        @* Citas deduplicadas por fuente (un mismo doc aporta varios fragmentos). *@
+                        <div class="cites">
+                            @foreach (var c in m.Citations.GroupBy(x => x.Source).Select(g => g.First()))
+                            {
+                                <span class="cite" title="@c.Snippet">[@c.Source]</span>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="ask">
+            <input @bind="_question" @bind:event="oninput" @onkeydown="OnKey"
+                   placeholder="Escribe tu pregunta…" disabled="@(!Rag.Ready || _asking)" />
+            <button class="primary" disabled="@(!Rag.Ready || _asking)" @onclick="Ask">
+                @(_asking ? "…" : "Enviar")
+            </button>
+        </div>
+    </section>
+
+</div>
+
+@code {
+    // ── estado del panel de ingesta ──
+    string _text = "", _source = "";
+    bool _ingesting, _ingOk;
+    string? _ingMsg;
+
+    // ── estado del chat ──
+    readonly List<Msg> _msgs = new();
+    string _question = "";
+    bool _asking;
+
+    /// <summary>Un mensaje del chat. Text es mutable para rellenarse en streaming.</summary>
+    sealed class Msg
+    {
+        public required string Role { get; init; }       // "user" | "assistant"
+        public string Text { get; set; } = "";
+        public IReadOnlyList<Citation> Citations { get; set; } = Array.Empty<Citation>();
+    }
+
+    // Inicializa el cliente RAG la primera vez que se renderiza la página.
+    protected override Task OnInitializedAsync() => Rag.InitializeAsync();
+
+    async Task Retry() => await Rag.InitializeAsync();
+
+    async Task IngestText()
+    {
+        _ingesting = true; _ingMsg = null;
+        var name = string.IsNullOrWhiteSpace(_source) ? "texto" : _source;
+        _ingOk = await Rag.IngestAsync(name, _text);
+        _ingMsg = _ingOk ? $"«{name}» indexado." : "No se pudo ingerir (¿texto vacío o Ollama caído?).";
+        if (_ingOk) { _text = ""; _source = ""; }
+        _ingesting = false;
+    }
+
+    async Task IngestFile(InputFileChangeEventArgs e)
+    {
+        _ingesting = true; _ingMsg = null;
+        var file = e.File;
+        // Volcamos el fichero a un temporal y dejamos que RagKit extraiga el texto.
+        var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "_" + file.Name);
+        try
+        {
+            await using (var fs = File.Create(tmp))
+                await file.OpenReadStream(50_000_000).CopyToAsync(fs);
+            _ingOk = await Rag.IngestFileAsync(tmp, file.Name);
+            _ingMsg = _ingOk ? $"«{file.Name}» indexado." : "No se pudo extraer texto del fichero.";
+        }
+        catch (Exception ex) { _ingOk = false; _ingMsg = "Error: " + ex.Message; }
+        finally { try { File.Delete(tmp); } catch { } _ingesting = false; }
+    }
+
+    async Task OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") await Ask(); }
+
+    async Task Ask()
+    {
+        var q = _question.Trim();
+        if (q.Length == 0 || _asking) return;
+        _asking = true;
+        _question = "";
+        _msgs.Add(new Msg { Role = "user", Text = q });
+
+        // Respuesta en streaming: las citas llegan ya; el texto se va rellenando.
+        var answer = new Msg { Role = "assistant" };
+        _msgs.Add(answer);
+        try
+        {
+            var stream = await Rag.AskStream(q);
+            answer.Citations = stream.Citations;
+            await foreach (var token in stream.Tokens)
+            {
+                answer.Text += token;
+                StateHasChanged();          // repinta cada token → efecto "escribiendo"
+            }
+        }
+        catch (Exception ex) { answer.Text = "⚠ " + ex.Message; }
+        _asking = false;
+    }
+}

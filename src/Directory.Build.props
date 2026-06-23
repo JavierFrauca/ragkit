@@ -1,0 +1,16 @@
+<Project>
+  <!-- Shared NuGet metadata for all RagKit packages under src/. -->
+  <PropertyGroup>
+    <Version>0.1.0-alpha</Version>
+    <Authors>JavierFrauca</Authors>
+    <Product>RagKit</Product>
+    <PackageProjectUrl>https://github.com/JavierFrauca/ragkit</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/JavierFrauca/ragkit</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>rag;llm;embeddings;ai;retrieval;mcp;vector</PackageTags>
+    <Description>RagKit — RAG agéntico llave en mano para .NET: configura un LLM, define dominios/etiquetas, ingesta y pregunta.</Description>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+</Project>

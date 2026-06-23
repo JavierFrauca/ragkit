@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MiniRag</RootNamespace>
+    <!-- Blazor Server: evita excepciones de navegación en redirecciones. -->
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Solo dos referencias: el core de RagKit y el extractor de PDF/DOCX.
+         Embeddings y LLM van por la API de Ollama, así que NO hace falta ONNX
+         ni conectores de base de datos para este mini-RAG. -->
+    <ProjectReference Include="..\..\src\RagKit\RagKit.csproj" />
+    <ProjectReference Include="..\..\src\RagKit.Extractors\RagKit.Extractors.csproj" />
+  </ItemGroup>
+
+</Project>

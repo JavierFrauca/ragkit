@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/examples/">
+    <Project Path="examples/MiniRag/MiniRag.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/RagKit.Extractors/RagKit.Extractors.csproj" />
+    <Project Path="src/RagKit.Mcp/RagKit.Mcp.csproj" />
+    <Project Path="src/RagKit.Onnx/RagKit.Onnx.csproj" />
+    <Project Path="src/RagKit.Postgres/RagKit.Postgres.csproj" />
+    <Project Path="src/RagKit.SqlServer/RagKit.SqlServer.csproj" />
+    <Project Path="src/RagKit/RagKit.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RagKit.Tests/RagKit.Tests.csproj" />
+  </Folder>
+</Solution>
