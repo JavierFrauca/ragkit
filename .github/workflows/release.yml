@@ -1,0 +1,52 @@
+name: Release
+
+# Publica los paquetes en NuGet.org al empujar un tag de versión, p. ej. v0.1.0.
+# Requiere el secreto NUGET_API_KEY en el repositorio (Settings → Secrets → Actions).
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Check tag matches Version
+        # El tag vX.Y.Z debe coincidir con <Version> de Directory.Build.props.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(grep -oP '(?<=<Version>)[^<]+' src/Directory.Build.props | head -1)
+          echo "tag=$TAG  version=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::El tag ($TAG) no coincide con <Version> ($VER) en Directory.Build.props"
+            exit 1
+          fi
+
+      - name: Restore
+        run: dotnet restore RagKit.slnx
+      - name: Build
+        run: dotnet build RagKit.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true
+      - name: Test
+        run: dotnet test RagKit.slnx -c Release --no-build
+      - name: Pack
+        run: dotnet pack RagKit.slnx -c Release -o artifacts --no-build -p:ContinuousIntegrationBuild=true
+
+      - name: Push to NuGet.org
+        # Sube .nupkg y .snupkg (símbolos) en el mismo push. --skip-duplicate evita
+        # fallar si una versión ya estaba publicada.
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts/*.nupkg

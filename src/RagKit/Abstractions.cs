@@ -8,6 +8,43 @@ public sealed record DomainInfo(string Name, string Description = "");
 /// <summary>A label in the vocabulary, with a description to guide auto-labeling.</summary>
 public sealed record LabelInfo(string Name, string Description = "");
 
+/// <summary>
+/// A profile: a "lens"/sub-view inside a domain (e.g. architect, plumber,
+/// electrician within "construction"). The tier-2 model can select it from the
+/// query text. It carries (a) a focused system <see cref="Prompt"/> and (b) the
+/// <see cref="Labels"/> that scope retrieval to that lens. Both are optional:
+/// with no prompt the resolution chain falls back to the domain/global prompt,
+/// with no labels retrieval isn't narrowed.
+/// </summary>
+public sealed record ProfileInfo(
+    string Name, string Domain, string Description = "",
+    string? Prompt = null, IReadOnlyList<string>? Labels = null);
+
+/// <summary>Where a guardrail rule applies: the incoming query, or the generated answer.</summary>
+public enum GuardrailStage { Input, Output }
+
+/// <summary>
+/// A guardrail rule in natural language, interpreted by the tier-2 model as a
+/// system-level instruction (never concatenated with — and so never overridable
+/// by — the user input). Scope is optional: a null <see cref="Domain"/>/
+/// <see cref="Profile"/> makes the rule global / domain-wide.
+/// </summary>
+public sealed record GuardrailRule(
+    string Description, GuardrailStage Stage = GuardrailStage.Input,
+    string? Domain = null, string? Profile = null);
+
+/// <summary>
+/// The outcome of routing a query: the chosen domain, zero or more profiles
+/// (multi when overlapping branches apply), the labels those profiles map to,
+/// and the model's confidence in the domain choice.
+/// </summary>
+public sealed record RouteDecision(
+    string? Domain, IReadOnlyList<string> Profiles,
+    IReadOnlyList<string> Labels, double Confidence);
+
+/// <summary>A guardrail verdict: whether the content is allowed, and why not if blocked.</summary>
+public sealed record GuardDecision(bool Allowed, string? Reason);
+
 /// <summary>A source-attributed excerpt that supported the answer.</summary>
 public sealed record Citation(string Source, string Snippet, double Score);
 

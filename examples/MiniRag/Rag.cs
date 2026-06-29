@@ -50,6 +50,33 @@ public sealed class Rag
         "- Si la respuesta no está en los documentos, dilo con claridad y no la inventes.\n" +
         "- Responde en español, de forma clara y concisa.";
 
+    /// <summary>
+    /// <b>Perfiles automáticos (query routing)</b>. Cuando está activo, antes de responder
+    /// el tier-2 mira la pregunta y elige una "lente" (perfil) que ajusta el tono. Cuesta
+    /// una llamada extra al LLM por pregunta; desactívalo para usar solo el prompt editable.
+    /// </summary>
+    public bool AutoProfiles { get; set; } = true;
+
+    // Reglas de grounding comunes a todas las lentes (cada lente reemplaza el system prompt,
+    // así que debe traer sus propias reglas de citado/anti-alucinación).
+    private const string GroundingRules =
+        "Responde ÚNICAMENTE con la información de los fragmentos recuperados. " +
+        "Cita las fuentes como [1], [2]… Si la respuesta no está en los documentos, dilo y no la inventes. " +
+        "Responde en español.";
+
+    /// <summary>
+    /// Las "lentes" (perfiles) del dominio: el tier-2 elige una según la pregunta. Aquí solo
+    /// cambian el tono (mismo dominio, distinta forma de responder). Un perfil también podría
+    /// mapear a etiquetas para acotar la búsqueda; en este ejemplo de texto libre no lo hacen.
+    /// </summary>
+    public static readonly ProfileInfo[] Lenses =
+    {
+        new("conciso",   Domain, "preguntas que piden una respuesta breve y directa",
+            Prompt: GroundingRules + " Sé muy breve: una o dos frases, al grano, sin rodeos."),
+        new("detallado", Domain, "preguntas que piden explicación amplia, contexto o matices técnicos",
+            Prompt: GroundingRules + " Sé exhaustivo: explica el contexto, los matices y los detalles técnicos relevantes."),
+    };
+
     /// <summary>True cuando el cliente está listo (Ollama respondió y se cargó el modelo).</summary>
     public bool Ready => _client is not null;
 
@@ -62,19 +89,31 @@ public sealed class Rag
     // ─────────────────────────────────────────────────────────────────────────
     //  EL RAG EN 4 LÍNEAS  (el resto del fichero es UI/estado del ejemplo)
     // ─────────────────────────────────────────────────────────────────────────
-    private RagOptions BuildOptions() => new()
+    private RagOptions BuildOptions()
     {
-        // 1) El LLM que redacta las respuestas (Ollama, modelo qwen2.5:7b).
-        //    TimeoutSeconds alto: un 7B en local (sobre todo en CPU) puede tardar
-        //    minutos en contextos grandes; así no se cancela la respuesta.
-        Answer   = new LlmConfig { Url = OllamaUrl, Model = "qwen2.5:7b", TimeoutSeconds = 600 },
-        // 2) El modelo de embeddings (Ollama, nomic-embed-text → 768 dimensiones).
-        Embedder = new EmbedderConfig { Kind = EmbedderKind.OpenAi, Url = OllamaUrl, Model = "nomic-embed-text", Dimension = 768 },
-        // 3) Sin auto-clasificación: en este ejemplo todo va a un único dominio.
-        AutoClassify = false,
-        // 4) El prompt de sistema (Markdown). Aquí, el de ejemplo editable.
-        OneShotPrompt = SystemPrompt,
-    };
+        var opts = new RagOptions
+        {
+            // 1) El LLM que redacta las respuestas (Ollama, modelo qwen2.5:7b).
+            //    TimeoutSeconds alto: un 7B en local (sobre todo en CPU) puede tardar
+            //    minutos en contextos grandes; así no se cancela la respuesta.
+            Answer   = new LlmConfig { Url = OllamaUrl, Model = "qwen2.5:7b", TimeoutSeconds = 600 },
+            // 2) El modelo de embeddings (Ollama, nomic-embed-text → 768 dimensiones).
+            Embedder = new EmbedderConfig { Kind = EmbedderKind.OpenAi, Url = OllamaUrl, Model = "nomic-embed-text", Dimension = 768 },
+            // 3) Sin auto-clasificación: en este ejemplo todo va a un único dominio.
+            AutoClassify = false,
+            // 4) El prompt de sistema (Markdown). Aquí, el de ejemplo editable.
+            OneShotPrompt = SystemPrompt,
+            // 5) Una lente por pregunta (tono), no varias a la vez.
+            MultiProfile = false,
+        };
+        // Perfiles ("lentes"): el tier-2 elige uno según la pregunta (query routing).
+        foreach (var lens in Lenses) opts.Profiles.Add(lens);
+        // El guardarail de entrada va activo por defecto: primero checks deterministas
+        // (longitud + patrones de inyección, que bloquean "ignora las instrucciones…"
+        // sin gastar LLM) y luego una red de seguridad LLM (una llamada al tier-2 por
+        // pregunta). Para reglas a medida: opts.Guardrails.Add(new GuardrailRule("…")).
+        return opts;
+    }
     // (El almacén vectorial es InMemory por defecto: cero instalación. Para
     //  persistencia real basta cambiar Store por Qdrant/Postgres/SQL Server.)
 
@@ -118,15 +157,31 @@ public sealed class Rag
     }
 
     /// <summary>
-    /// Pregunta sobre los documentos. Devuelve un <see cref="RagStream"/>: las citas
-    /// están listas al instante y la respuesta llega token a token (streaming).
+    /// Enruta la pregunta: si los perfiles automáticos están activos, el tier-2 elige
+    /// la lente más adecuada (o null si no hay confianza). Devuelve su nombre para
+    /// mostrarlo en la UI; luego se pasa a <see cref="AskStream"/>.
     /// </summary>
-    public Task<RagStream> AskStream(string question)
+    public async Task<string?> RouteAsync(string question)
+    {
+        if (_client is null || !AutoProfiles) return null;
+        var route = await _client.RouteQueryAsync(question);
+        return route.Profiles.Count > 0 ? route.Profiles[0] : null;
+    }
+
+    /// <summary>
+    /// Pregunta sobre los documentos con la lente ya elegida. Devuelve un
+    /// <see cref="RagStream"/>: las citas están listas al instante y la respuesta llega
+    /// token a token (streaming). El guardarail de entrada se aplica dentro de RagKit.
+    /// </summary>
+    public Task<RagStream> AskStream(string question, string? profile)
     {
         // El prompt es editable en caliente: lo aplicamos en cada pregunta. RagKit
-        // lo lee en cada llamada, así no hay que recrear el cliente.
+        // lo lee en cada llamada, así no hay que recrear el cliente. Cuando hay perfil,
+        // su prompt-lente tiene prioridad sobre este (cadena de resolución de prompt).
         _options!.OneShotPrompt = string.IsNullOrWhiteSpace(SystemPrompt) ? null : SystemPrompt;
-        return _client!.AskStreamAsync(question, domain: Domain);
+        // Pasamos dominio y perfil explícitos: el enrutado ya se hizo en RouteAsync,
+        // así evitamos una segunda llamada al tier-2.
+        return _client!.AskStreamAsync(question, domain: Domain, profile: profile);
     }
 
     /// <summary>Restaura el prompt de ejemplo (botón de la UI).</summary>

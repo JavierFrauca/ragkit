@@ -68,6 +68,79 @@ public sealed class RagOptions
     /// </summary>
     public double ClassificationThreshold { get; set; } = 0.8;
 
-    /// <summary>MCP server endpoints to expose as tools. Reserved for a later increment.</summary>
+    /// <summary>
+    /// MCP servers to connect at startup, each a stdio command line
+    /// (e.g. "npx -y @modelcontextprotocol/server-everything stdio"). Requires the
+    /// RagKit.Mcp package with <c>McpServers.Enable()</c>; otherwise configuring any
+    /// entry throws. Their tools join the agent loop alongside the internal ones.
+    /// </summary>
     public IList<string> Mcps { get; } = new List<string>();
+
+    // --- query-time routing, profiles and guardrails --------------------------
+
+    /// <summary>
+    /// Profiles ("lenses"/sub-views) per domain, defined at init. Each carries an
+    /// optional focused prompt and an optional label set to scope retrieval. The
+    /// tier-2 model selects one (or several, see <see cref="MultiProfile"/>) from
+    /// the query when no profile is passed explicitly.
+    /// </summary>
+    public IList<ProfileInfo> Profiles { get; } = new List<ProfileInfo>();
+
+    /// <summary>
+    /// Optional per-domain system prompt. Sits between the (domain,profile) prompt
+    /// and the global <see cref="OneShotPrompt"/>/<see cref="ChatPrompt"/> in the
+    /// prompt-resolution chain.
+    /// </summary>
+    public IDictionary<string, string> DomainPrompts { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Guardrail rules (input and/or output), defined at init. The input guardrail
+    /// runs even with no rules (deterministic checks + a built-in LLM safety net);
+    /// rules add their natural-language constraints to that same tier-2 call.
+    /// </summary>
+    public IList<GuardrailRule> Guardrails { get; } = new List<GuardrailRule>();
+
+    /// <summary>
+    /// When true (default) and a query arrives without an explicit domain/profile,
+    /// the tier-2 model routes it (picks the domain and profile[s]). Routing runs
+    /// only if there is more than one domain, or any profiles are defined.
+    /// </summary>
+    public bool EnableQueryRouting { get; set; } = true;
+
+    /// <summary>Below this routing confidence (0..1), the query degrades to the safety
+    /// net: no domain filter (or the single domain), no profile, global prompt. Default 0.5.</summary>
+    public double RoutingThreshold { get; set; } = 0.5;
+
+    /// <summary>Allow the router to select several profiles for one query (their labels are
+    /// fused for retrieval). On by default — good for wide trees with overlapping branches.</summary>
+    public bool MultiProfile { get; set; } = true;
+
+    /// <summary>
+    /// Input guardrail over the raw query, before retrieval and the tier-1 model.
+    /// On by default and always active: deterministic checks (length + injection)
+    /// plus a built-in LLM safety net, so it adds one tier-2 call per query. Set to
+    /// false to disable it entirely.
+    /// </summary>
+    public bool EnableInputGuardrail { get; set; } = true;
+
+    /// <summary>
+    /// Output guardrail over the generated answer. On by default, but a no-op (no LLM
+    /// call) unless output rules are defined — there is no universal output default.
+    /// In streaming, an applicable output rule makes the answer buffer-then-emit
+    /// (it can't validate already-sent tokens).
+    /// </summary>
+    public bool EnableOutputGuardrail { get; set; } = true;
+
+    /// <summary>Message returned when a guardrail blocks a query or answer. Configurable.</summary>
+    public string GuardrailRejectionMessage { get; set; } = "Lo siento, no puedo ayudar con esa petición.";
+
+    /// <summary>Deterministic input cap: queries longer than this are rejected. 0 disables it. Default 4000.</summary>
+    public int MaxQueryLength { get; set; } = 4000;
+
+    /// <summary>
+    /// Deterministic PII check on the raw query (email, phone, IBAN, card, DNI/NIF).
+    /// Off by default: it would otherwise reject legitimate questions that merely
+    /// mention an email/number. Turn it on to block queries that carry personal data.
+    /// </summary>
+    public bool GuardrailPiiCheck { get; set; } = false;
 }

@@ -43,6 +43,24 @@ public interface IVectorStore
     Task<IReadOnlyList<DomainInfo>> ListDomainsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<LabelInfo>> ListLabelsAsync(CancellationToken ct = default);
 
+    // --- profiles & guardrails (persisted config; replace-the-whole-set semantics) ---
+    // CRUD lives in RagClient (an in-memory cache); the store just persists/loads the
+    // full list, so a backend only needs to serialize two small JSON blobs.
+
+    /// <summary>List the persisted profiles. Default: none (a store that doesn't persist config).</summary>
+    Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<ProfileInfo>>(Array.Empty<ProfileInfo>());
+
+    /// <summary>Persist the full set of profiles (replaces the stored set). Default: no-op (not persisted).</summary>
+    Task SaveProfilesAsync(IReadOnlyList<ProfileInfo> profiles, CancellationToken ct = default) => Task.CompletedTask;
+
+    /// <summary>List the persisted guardrail rules. Default: none.</summary>
+    Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<GuardrailRule>>(Array.Empty<GuardrailRule>());
+
+    /// <summary>Persist the full set of guardrail rules (replaces the stored set). Default: no-op.</summary>
+    Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default) => Task.CompletedTask;
+
     /// <summary>Index one chunk (its vector + provenance).</summary>
     Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default);
 

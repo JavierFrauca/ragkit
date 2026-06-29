@@ -87,6 +87,17 @@ ollama pull nomic-embed-text</pre>
             <summary>⚙ Prompt del sistema (editable)</summary>
             <textarea @bind="Rag.SystemPrompt" rows="6" spellcheck="false"></textarea>
             <button class="ghost" @onclick="Rag.ResetPrompt">Restaurar ejemplo</button>
+
+            @* Perfiles automáticos (query routing) + guardarail: las features nuevas. *@
+            <label class="toggle">
+                <input type="checkbox" @bind="Rag.AutoProfiles" />
+                Perfiles automáticos (el tier-2 elige la lente: @string.Join(" · ", MiniRag.Rag.Lenses.Select(l => l.Name)))
+            </label>
+            <p class="note">
+                🛡 Guardarail de entrada activo: checks deterministas (bloquean
+                «ignora las instrucciones…» sin LLM) + una red de seguridad LLM por
+                pregunta. Con perfiles automáticos, cada respuesta muestra la lente elegida.
+            </p>
         </details>
 
         <div class="messages">
@@ -108,6 +119,10 @@ ollama pull nomic-embed-text</pre>
                     else
                     {
                         <div class="bubble">@m.Text</div>
+                    }
+                    @if (m.Profile is not null && m.Text.Length > 0)
+                    {
+                        <div class="lens">🔎 lente: <b>@m.Profile</b></div>
                     }
                     @if (m.Citations.Count > 0 && m.Text.Length > 0)
                     {
@@ -151,6 +166,7 @@ ollama pull nomic-embed-text</pre>
         public required string Role { get; init; }       // "user" | "assistant"
         public string Text { get; set; } = "";
         public IReadOnlyList<Citation> Citations { get; set; } = Array.Empty<Citation>();
+        public string? Profile { get; set; }              // lente elegida por el router (si la hubo)
     }
 
     // Inicializa el cliente RAG la primera vez que se renderiza la página.
@@ -200,7 +216,11 @@ ollama pull nomic-embed-text</pre>
         _msgs.Add(answer);
         try
         {
-            var stream = await Rag.AskStream(q);
+            // 1) Enrutado: el tier-2 elige la lente (si los perfiles automáticos están on).
+            var profile = await Rag.RouteAsync(q);
+            answer.Profile = profile;
+            // 2) Respuesta con esa lente, en streaming.
+            var stream = await Rag.AskStream(q, profile);
             answer.Citations = stream.Citations;
             await foreach (var token in stream.Tokens)
             {

@@ -19,6 +19,8 @@ public sealed class InMemoryVectorStore : IVectorStore
         public int Dimension { get; set; }
         public List<DomainInfo> Domains { get; set; } = new();
         public List<LabelInfo> Labels { get; set; } = new();
+        public List<ProfileInfo> Profiles { get; set; } = new();
+        public List<GuardrailRule> Guardrails { get; set; } = new();
     }
 
     private readonly string _metaPath;
@@ -92,6 +94,28 @@ public sealed class InMemoryVectorStore : IVectorStore
     public Task<IReadOnlyList<LabelInfo>> ListLabelsAsync(CancellationToken ct = default)
     {
         lock (_lock) return Task.FromResult<IReadOnlyList<LabelInfo>>(_meta.Labels.ToList());
+    }
+
+    public Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+    {
+        lock (_lock) return Task.FromResult<IReadOnlyList<ProfileInfo>>(_meta.Profiles.ToList());
+    }
+
+    public Task SaveProfilesAsync(IReadOnlyList<ProfileInfo> profiles, CancellationToken ct = default)
+    {
+        lock (_lock) { EnsureInit(); _meta.Profiles = profiles.ToList(); Save(); }
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+    {
+        lock (_lock) return Task.FromResult<IReadOnlyList<GuardrailRule>>(_meta.Guardrails.ToList());
+    }
+
+    public Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default)
+    {
+        lock (_lock) { EnsureInit(); _meta.Guardrails = guardrails.ToList(); Save(); }
+        return Task.CompletedTask;
     }
 
     public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)

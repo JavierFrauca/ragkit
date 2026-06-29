@@ -19,11 +19,19 @@ public sealed class RagClient
     private readonly IVectorStore _store;
     private readonly IChatClient _answer;
     private readonly Classifier _classifier;
+    private readonly QueryRouter _router;
+    private readonly Guardrail _guardrail;
     private readonly List<IRagTool> _externalTools = new();
     private readonly LexicalIndex _lexical = new();
     private readonly SemaphoreSlim _lexicalGate = new(1, 1);
     private bool _lexicalLoaded;
     private IReranker? _reranker;
+
+    // Profiles/guardrails cache (CRUD lives here; the store persists the full set).
+    // Volatile reference swaps give lock-free, consistent reads on the hot query path.
+    private volatile IReadOnlyList<ProfileInfo> _profiles = Array.Empty<ProfileInfo>();
+    private volatile IReadOnlyList<GuardrailRule> _guardrails = Array.Empty<GuardrailRule>();
+    private readonly SemaphoreSlim _configGate = new(1, 1);
 
     internal RagClient(RagOptions options, IEmbedder embedder, IVectorStore store, IChatClient answer, IChatClient classifier)
     {
@@ -32,6 +40,12 @@ public sealed class RagClient
         _store = store;
         _answer = answer;
         _classifier = new Classifier(classifier);
+        _router = new QueryRouter(classifier);
+        _guardrail = new Guardrail(classifier);
+        // Seed the in-memory config from options. CreateAsync later reconciles this
+        // with what's persisted in the store (store wins if it already has entries).
+        _profiles = options.Profiles.ToList();
+        _guardrails = options.Guardrails.ToList();
     }
 
     /// <summary>
@@ -50,6 +64,10 @@ public sealed class RagClient
         // store's model+dimension guard runs — no blocking work in constructors.
         await embedder.InitializeAsync(ct).ConfigureAwait(false);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension, ct).ConfigureAwait(false);
+        // Load persisted profiles/guardrails (seeding the store from options on first run).
+        await client.LoadConfigAsync(ct).ConfigureAwait(false);
+        // Connect any MCP servers declared in options (no-op unless RagKit.Mcp is enabled).
+        await client.ConnectMcpsAsync(ct).ConfigureAwait(false);
         // The lexical index for hybrid search is built lazily on first retrieval
         // (see EnsureLexicalAsync), so startup stays cheap even on large stores.
         return client;
@@ -79,6 +97,110 @@ public sealed class RagClient
     public Task<IReadOnlyList<DomainInfo>> ListDomainsAsync(CancellationToken ct = default) => _store.ListDomainsAsync(ct);
     public Task<IReadOnlyList<LabelInfo>> ListLabelsAsync(CancellationToken ct = default) => _store.ListLabelsAsync(ct);
     public Task<int> ChunkCountAsync(CancellationToken ct = default) => _store.CountAsync(ct);
+
+    // --- profiles & guardrails CRUD (persisted) ------------------------------
+
+    /// <summary>Load persisted profiles/guardrails from the store; on first run, seed the
+    /// store from the options' values so they survive restarts.</summary>
+    internal async Task LoadConfigAsync(CancellationToken ct)
+    {
+        var storedProfiles = await _store.ListProfilesAsync(ct).ConfigureAwait(false);
+        if (storedProfiles.Count == 0 && _profiles.Count > 0)
+            await _store.SaveProfilesAsync(_profiles, ct).ConfigureAwait(false);   // seed from options
+        else
+            _profiles = storedProfiles;                                            // store is the source of truth
+
+        var storedGuards = await _store.ListGuardrailsAsync(ct).ConfigureAwait(false);
+        if (storedGuards.Count == 0 && _guardrails.Count > 0)
+            await _store.SaveGuardrailsAsync(_guardrails, ct).ConfigureAwait(false);
+        else
+            _guardrails = storedGuards;
+    }
+
+    /// <summary>Create or replace a profile (matched by domain+name) and persist it.</summary>
+    public async Task<ProfileInfo> DefineProfileAsync(ProfileInfo profile, CancellationToken ct = default)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var list = _profiles.Where(p =>
+                !(string.Equals(p.Name, profile.Name, StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(p.Domain, profile.Domain, StringComparison.OrdinalIgnoreCase))).ToList();
+            list.Add(profile);
+            await _store.SaveProfilesAsync(list, ct).ConfigureAwait(false);
+            _profiles = list;
+            return profile;
+        }
+        finally { _configGate.Release(); }
+    }
+
+    /// <summary>Remove the profile with the given domain+name. Returns true if one was removed.</summary>
+    public async Task<bool> RemoveProfileAsync(string name, string domain, CancellationToken ct = default)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var list = _profiles.Where(p =>
+                !(string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(p.Domain, domain, StringComparison.OrdinalIgnoreCase))).ToList();
+            if (list.Count == _profiles.Count) return false;
+            await _store.SaveProfilesAsync(list, ct).ConfigureAwait(false);
+            _profiles = list;
+            return true;
+        }
+        finally { _configGate.Release(); }
+    }
+
+    public Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+        => Task.FromResult(_profiles);
+
+    /// <summary>Add a guardrail rule and persist it.</summary>
+    public async Task<GuardrailRule> DefineGuardrailAsync(GuardrailRule rule, CancellationToken ct = default)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var list = _guardrails.Where(r => r != rule).ToList();   // records: structural equality dedupes
+            list.Add(rule);
+            await _store.SaveGuardrailsAsync(list, ct).ConfigureAwait(false);
+            _guardrails = list;
+            return rule;
+        }
+        finally { _configGate.Release(); }
+    }
+
+    /// <summary>Remove a guardrail rule (by value). Returns true if one was removed.</summary>
+    public async Task<bool> RemoveGuardrailAsync(GuardrailRule rule, CancellationToken ct = default)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var list = _guardrails.Where(r => r != rule).ToList();
+            if (list.Count == _guardrails.Count) return false;
+            await _store.SaveGuardrailsAsync(list, ct).ConfigureAwait(false);
+            _guardrails = list;
+            return true;
+        }
+        finally { _configGate.Release(); }
+    }
+
+    public Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+        => Task.FromResult(_guardrails);
+
+    /// <summary>Connect the MCP servers declared in <see cref="RagOptions.Mcps"/> through the
+    /// connector registered by RagKit.Mcp. Throws if endpoints are configured but the
+    /// connector isn't enabled.</summary>
+    internal async Task ConnectMcpsAsync(CancellationToken ct)
+    {
+        if (_options.Mcps.Count == 0) return;
+        var connector = McpConnectors.Connector
+            ?? throw new RagKitException(
+                "Hay servidores MCP en RagOptions.Mcps pero el conector no está habilitado. " +
+                "Añade el paquete RagKit.Mcp y llama a McpServers.Enable() al arrancar.");
+        foreach (var entry in _options.Mcps)
+            if (!string.IsNullOrWhiteSpace(entry))
+                await connector(this, entry, ct).ConfigureAwait(false);
+    }
 
     // --- ingest --------------------------------------------------------------
 
@@ -151,40 +273,94 @@ public sealed class RagClient
 
     // --- ask -----------------------------------------------------------------
 
-    /// <summary>One-shot RAG: retrieve, build the grounded prompt, answer with citations. Works with any model.</summary>
+    /// <summary>
+    /// One-shot RAG: route (if no explicit domain/profile), guardrail the query,
+    /// retrieve, answer with the resolved prompt, guardrail the answer. Works with
+    /// any model. Pass <paramref name="domain"/> and/or <paramref name="profile"/>
+    /// to skip routing; leave them null to let the tier-2 model route.
+    /// </summary>
     public async Task<RagAnswer> AskAsync(
-        string question, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
+        string question, string? domain = null, IReadOnlyList<string>? labels = null,
+        string? profile = null, CancellationToken ct = default)
     {
-        var hits = await RetrieveAsync(question, domain, labels, ct).ConfigureAwait(false);
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagAnswer(_options.GuardrailRejectionMessage, Array.Empty<Citation>());
+
+        var hits = await RetrieveAsync(question, route.Domain, MergeLabels(labels, route.Labels), ct).ConfigureAwait(false);
         var messages = new[]
         {
-            new ChatMessage("system", _options.OneShotPrompt ?? Prompt.DefaultSystem),
+            new ChatMessage("system", SelectPrompt(route.Domain, primary, _options.OneShotPrompt ?? Prompt.DefaultSystem)),
             new ChatMessage("user", Prompt.BuildUser(question, hits)),
         };
         var answer = await _answer.CompleteAsync(messages, ct).ConfigureAwait(false);
+
+        var outGuard = await GuardOutputAsync(answer, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!outGuard.Allowed)
+            return new RagAnswer(_options.GuardrailRejectionMessage, ToCitations(hits));
+
         return new RagAnswer(answer, ToCitations(hits));
     }
 
     /// <summary>
-    /// One-shot RAG, streamed: retrieve, then stream the grounded answer token-by-token.
-    /// <see cref="RagStream.Citations"/> are ready immediately; enumerate
-    /// <see cref="RagStream.Tokens"/> to consume the answer as it arrives.
+    /// One-shot RAG, streamed: routes and input-guards as <see cref="AskAsync"/>, then
+    /// streams the grounded answer token-by-token. <see cref="RagStream.Citations"/>
+    /// are ready immediately. If an OUTPUT guardrail applies to the scope, the answer
+    /// is buffered, validated and then emitted as a single chunk (tokens can't be
+    /// un-sent) — so live streaming only degrades when you've configured output rules.
     /// </summary>
     public async Task<RagStream> AskStreamAsync(
-        string question, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
+        string question, string? domain = null, IReadOnlyList<string>? labels = null,
+        string? profile = null, CancellationToken ct = default)
     {
-        var hits = await RetrieveAsync(question, domain, labels, ct).ConfigureAwait(false);
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagStream(Array.Empty<Citation>(), One(_options.GuardrailRejectionMessage));
+
+        var hits = await RetrieveAsync(question, route.Domain, MergeLabels(labels, route.Labels), ct).ConfigureAwait(false);
         var messages = new[]
         {
-            new ChatMessage("system", _options.OneShotPrompt ?? Prompt.DefaultSystem),
+            new ChatMessage("system", SelectPrompt(route.Domain, primary, _options.OneShotPrompt ?? Prompt.DefaultSystem)),
             new ChatMessage("user", Prompt.BuildUser(question, hits)),
         };
+
+        // If an output guardrail applies, we can't stream live (tokens can't be un-sent):
+        // buffer the full answer, validate it, then emit it as one chunk (or reject).
+        if (HasOutputGuardrail(route.Domain, primary))
+        {
+            var full = await _answer.CompleteAsync(messages, ct).ConfigureAwait(false);
+            var og = await GuardOutputAsync(full, route.Domain, primary, ct).ConfigureAwait(false);
+            return og.Allowed
+                ? new RagStream(ToCitations(hits), One(full))
+                : new RagStream(ToCitations(hits), One(_options.GuardrailRejectionMessage));
+        }
+
         return new RagStream(ToCitations(hits), _answer.StreamAsync(messages, ct));
     }
 
-    /// <summary>Start a multi-turn chat (optionally scoped to a domain), grounded per turn.</summary>
-    public ChatSession StartChat(string? domain = null)
-        => new(this, _options.ChatPrompt ?? _options.OneShotPrompt ?? Prompt.DefaultSystem, domain);
+    /// <summary>
+    /// Route a query (pick domain + profile[s]) with the tier-2 model, without
+    /// answering. Lets an app show or override the routing before calling
+    /// <see cref="AskAsync"/> with an explicit domain/profile.
+    /// </summary>
+    public async Task<RouteDecision> RouteQueryAsync(string question, CancellationToken ct = default)
+    {
+        var domains = await _store.ListDomainsAsync(ct).ConfigureAwait(false);
+        if (domains.Count == 0)
+            return new RouteDecision(null, Array.Empty<string>(), Array.Empty<string>(), 0.0);
+        return await _router.RouteAsync(question, domains, _profiles, _options.MultiProfile, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Start a multi-turn chat (optionally scoped to a domain/profile), grounded per
+    /// turn. With neither given, the first turn is routed and the choice is reused for the session.</summary>
+    public ChatSession StartChat(string? domain = null, string? profile = null)
+        => new(this, _options.ChatPrompt ?? _options.OneShotPrompt ?? Prompt.DefaultSystem, domain, profile);
 
     /// <summary>Register an external tool (e.g. an MCP server adapter) for the agent loop.</summary>
     public void RegisterTool(IRagTool tool) => _externalTools.Add(tool);
@@ -198,13 +374,23 @@ public sealed class RagClient
     public async Task<RagAnswer> AskAgentAsync(string question, string? domain = null, int maxSteps = 5, CancellationToken ct = default)
     {
         if (!_answer.SupportsTools)
-            return await AskAsync(question, domain, null, ct).ConfigureAwait(false);
+            return await AskAsync(question, domain, null, null, ct).ConfigureAwait(false);
 
-        var search = new SearchTool(this, domain);
+        // Same front door as AskAsync: route (when not pinned) and guardrail the query
+        // BEFORE any tool runs, so the agentic path can't bypass the guardrail.
+        var route = await ResolveRouteAsync(question, domain, null, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagAnswer(_options.GuardrailRejectionMessage, Array.Empty<Citation>());
+
+        var search = new SearchTool(this, route.Domain);
         var tools = new List<IRagTool>
         {
             search, new ListDomainsTool(this), new ListLabelsTool(this),
-            new CreateDomainTool(this), new CreateLabelTool(this), new IngestTool(this, domain),
+            new CreateDomainTool(this), new CreateLabelTool(this), new IngestTool(this, route.Domain),
+            new CreateProfileTool(this), new CreateGuardrailTool(this),
         };
         tools.AddRange(_externalTools);
         var specs = tools.Select(t => new ToolSpec(t.Name, t.Description, t.ParametersSchema)).ToList();
@@ -212,7 +398,7 @@ public sealed class RagClient
 
         var msgs = new List<AgentMessage>
         {
-            new("system", _options.OneShotPrompt ?? Prompt.AgentSystem),
+            new("system", SelectPrompt(route.Domain, primary, _options.OneShotPrompt ?? Prompt.AgentSystem)),
             new("user", question),
         };
 
@@ -220,7 +406,7 @@ public sealed class RagClient
         {
             var turn = await _answer.NextAsync(msgs, specs, ct).ConfigureAwait(false);
             if (turn.ToolCalls.Count == 0)
-                return new RagAnswer(turn.Content ?? "", search.Citations);
+                return await GuardedAgentAnswer(turn.Content ?? "", route.Domain, primary, search, ct).ConfigureAwait(false);
 
             msgs.Add(new AgentMessage("assistant", turn.Content, ToolCalls: turn.ToolCalls));
             foreach (var call in turn.ToolCalls)
@@ -241,7 +427,120 @@ public sealed class RagClient
         var final = await _answer.CompleteAsync(
             msgs.Where(m => m.Role is "system" or "user" or "assistant")
                 .Select(m => new ChatMessage(m.Role, m.Content ?? "")).ToList(), ct).ConfigureAwait(false);
-        return new RagAnswer(final, search.Citations);
+        return await GuardedAgentAnswer(final, route.Domain, primary, search, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Apply the output guardrail to an agentic answer before returning it.</summary>
+    private async Task<RagAnswer> GuardedAgentAnswer(string answer, string? domain, string? profile, SearchTool search, CancellationToken ct)
+    {
+        var og = await GuardOutputAsync(answer, domain, profile, ct).ConfigureAwait(false);
+        return og.Allowed
+            ? new RagAnswer(answer, search.Citations)
+            : new RagAnswer(_options.GuardrailRejectionMessage, search.Citations);
+    }
+
+    // --- routing / prompt / guardrail (shared with ChatSession) --------------
+
+    /// <summary>The resolved scope of a query: where to search and which lens to apply.</summary>
+    internal sealed record Resolved(string? Domain, IReadOnlyList<string> Profiles, IReadOnlyList<string> Labels);
+
+    internal string GuardrailRejectionMessage => _options.GuardrailRejectionMessage;
+
+    /// <summary>
+    /// Resolve domain + profile[s] for a query. Explicit domain/profile skip routing.
+    /// Otherwise, if routing is on and there's something to route (more than one
+    /// domain, or any profiles), the tier-2 model picks; a low-confidence result
+    /// degrades to the safe default (single domain or none, no profile).
+    /// </summary>
+    internal async Task<Resolved> ResolveRouteAsync(string question, string? domain, string? profile, CancellationToken ct)
+    {
+        var domains = await _store.ListDomainsAsync(ct).ConfigureAwait(false);
+
+        if (domain is null && profile is null && _options.EnableQueryRouting && domains.Count > 0
+            && (domains.Count > 1 || _profiles.Count > 0))
+        {
+            var decision = await _router.RouteAsync(question, domains, _profiles, _options.MultiProfile, ct).ConfigureAwait(false);
+            if (decision.Confidence >= _options.RoutingThreshold)
+            {
+                var routed = decision.Domain ?? (domains.Count == 1 ? domains[0].Name : null);
+                return new Resolved(routed, decision.Profiles, decision.Labels);
+            }
+            // Low confidence → fall through to the safe defaults below.
+        }
+
+        var resolvedDomain = domain ?? (domains.Count == 1 ? domains[0].Name : null);
+        var profiles = profile is not null ? new[] { profile } : Array.Empty<string>();
+        return new Resolved(resolvedDomain, profiles, ProfileLabels(resolvedDomain, profiles));
+    }
+
+    /// <summary>Union of the labels mapped by the given profiles within a domain.</summary>
+    private IReadOnlyList<string> ProfileLabels(string? domain, IReadOnlyList<string> profiles)
+    {
+        if (domain is null || profiles.Count == 0) return Array.Empty<string>();
+        var labels = new List<string>();
+        foreach (var name in profiles)
+        {
+            var p = _profiles.FirstOrDefault(x =>
+                string.Equals(x.Domain, domain, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (p?.Labels is null) continue;
+            foreach (var l in p.Labels) if (!labels.Contains(l)) labels.Add(l);
+        }
+        return labels;
+    }
+
+    /// <summary>Prompt-resolution chain: (domain,profile) → per-domain → global fallback.</summary>
+    internal string SelectPrompt(string? domain, string? profile, string globalFallback)
+    {
+        if (domain is not null && profile is not null)
+        {
+            var p = _profiles.FirstOrDefault(x =>
+                string.Equals(x.Domain, domain, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(x.Name, profile, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(p?.Prompt)) return p!.Prompt!;
+        }
+        if (domain is not null && _options.DomainPrompts.TryGetValue(domain, out var dp) && !string.IsNullOrWhiteSpace(dp))
+            return dp;
+        return globalFallback;
+    }
+
+    private IReadOnlyList<GuardrailRule> ApplicableRules(string? domain, string? profile, GuardrailStage stage)
+        => _guardrails.Where(r => r.Stage == stage
+            && (r.Domain is null || string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase))
+            && (r.Profile is null || string.Equals(r.Profile, profile, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+    /// <summary>Whether an output guardrail would actually run for this scope (used to decide
+    /// if a streamed answer must be buffered before emitting).</summary>
+    internal bool HasOutputGuardrail(string? domain, string? profile)
+        => _options.EnableOutputGuardrail && ApplicableRules(domain, profile, GuardrailStage.Output).Count > 0;
+
+    internal Task<GuardDecision> GuardInputAsync(string query, string? domain, string? profile, CancellationToken ct)
+        => _options.EnableInputGuardrail
+            ? _guardrail.CheckInputAsync(query, ApplicableRules(domain, profile, GuardrailStage.Input),
+                _options.MaxQueryLength, _options.GuardrailPiiCheck, ct)
+            : Task.FromResult(new GuardDecision(true, null));
+
+    internal Task<GuardDecision> GuardOutputAsync(string answer, string? domain, string? profile, CancellationToken ct)
+        => _options.EnableOutputGuardrail
+            ? _guardrail.CheckOutputAsync(answer, ApplicableRules(domain, profile, GuardrailStage.Output), ct)
+            : Task.FromResult(new GuardDecision(true, null));
+
+    /// <summary>Combine explicit labels with profile-mapped labels (null when neither applies).</summary>
+    private static IReadOnlyList<string>? MergeLabels(IReadOnlyList<string>? explicitLabels, IReadOnlyList<string> profileLabels)
+    {
+        if ((explicitLabels is null || explicitLabels.Count == 0) && profileLabels.Count == 0) return null;
+        var set = new List<string>();
+        if (explicitLabels is not null) foreach (var l in explicitLabels) if (!set.Contains(l)) set.Add(l);
+        foreach (var l in profileLabels) if (!set.Contains(l)) set.Add(l);
+        return set.Count > 0 ? set : null;
+    }
+
+    /// <summary>Yield a single string as an async stream (used for guardrail rejections).</summary>
+    internal static async IAsyncEnumerable<string> One(string s)
+    {
+        yield return s;
+        await Task.CompletedTask;
     }
 
     // --- internals shared with ChatSession ----------------------------------
@@ -330,25 +629,70 @@ public sealed class RagClient
     private static string Snippet(string text, int max = 200) => text.Length <= max ? text : text[..max] + "…";
 }
 
-/// <summary>A conversational session that augments each user turn with retrieval.</summary>
+/// <summary>
+/// A conversational session that augments each user turn with retrieval. Domain
+/// and profile are resolved once (on the first turn, routed if not given) and
+/// reused — so routing latency is paid only once per chat. The input guardrail
+/// runs on every turn; the output guardrail on non-streamed turns.
+/// </summary>
 public sealed class ChatSession
 {
     private readonly RagClient _rag;
-    private readonly string? _domain;
+    private readonly string _globalPrompt;
+    private readonly string? _domainParam;
+    private readonly string? _profileParam;
     private readonly List<ChatMessage> _history = new();
 
-    internal ChatSession(RagClient rag, string systemPrompt, string? domain)
+    private bool _resolved;
+    private string? _domain;
+    private string? _profile;
+    private IReadOnlyList<string>? _labels;
+
+    internal ChatSession(RagClient rag, string globalPrompt, string? domain, string? profile)
     {
         _rag = rag;
-        _domain = domain;
-        _history.Add(new ChatMessage("system", systemPrompt));
+        _globalPrompt = globalPrompt;
+        _domainParam = domain;
+        _profileParam = profile;
+    }
+
+    /// <summary>The domain this session resolved to (available after the first turn).</summary>
+    public string? Domain => _domain;
+
+    /// <summary>The profile this session resolved to (available after the first turn).</summary>
+    public string? Profile => _profile;
+
+    /// <summary>On the first turn, route (if needed), pick the system prompt and seed history.</summary>
+    private async Task EnsureResolvedAsync(string firstMessage, CancellationToken ct)
+    {
+        if (_resolved) return;
+        var route = await _rag.ResolveRouteAsync(firstMessage, _domainParam, _profileParam, ct).ConfigureAwait(false);
+        _domain = route.Domain;
+        _profile = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+        _labels = route.Labels.Count > 0 ? route.Labels : null;
+        _history.Add(new ChatMessage("system", _rag.SelectPrompt(_domain, _profile, _globalPrompt)));
+        _resolved = true;
     }
 
     public async Task<RagAnswer> AskAsync(string message, CancellationToken ct = default)
     {
-        var hits = await _rag.RetrieveAsync(message, _domain, null, ct).ConfigureAwait(false);
-        _history.Add(new ChatMessage("user", Internal.Prompt.BuildUser(message, hits)));
-        var answer = await _rag.CompleteAnswerAsync(_history.ToArray(), ct).ConfigureAwait(false);
+        await EnsureResolvedAsync(message, ct).ConfigureAwait(false);
+
+        var guard = await _rag.GuardInputAsync(message, _domain, _profile, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagAnswer(_rag.GuardrailRejectionMessage, Array.Empty<Citation>());
+
+        var hits = await _rag.RetrieveAsync(message, _domain, _labels, ct).ConfigureAwait(false);
+        var userMsg = new ChatMessage("user", Internal.Prompt.BuildUser(message, hits));
+        var convo = new List<ChatMessage>(_history) { userMsg };
+        var answer = await _rag.CompleteAnswerAsync(convo, ct).ConfigureAwait(false);
+
+        var outGuard = await _rag.GuardOutputAsync(answer, _domain, _profile, ct).ConfigureAwait(false);
+        if (!outGuard.Allowed)
+            return new RagAnswer(_rag.GuardrailRejectionMessage, RagClient.ToCitations(hits));
+
+        // Only commit a turn that passed both guardrails to the history.
+        _history.Add(userMsg);
         _history.Add(new ChatMessage("assistant", answer));
         return new RagAnswer(answer, RagClient.ToCitations(hits));
     }
@@ -357,19 +701,41 @@ public sealed class ChatSession
     /// the full assistant turn in history once the stream completes.</summary>
     public async Task<RagStream> AskStreamAsync(string message, CancellationToken ct = default)
     {
-        var hits = await _rag.RetrieveAsync(message, _domain, null, ct).ConfigureAwait(false);
-        _history.Add(new ChatMessage("user", Internal.Prompt.BuildUser(message, hits)));
-        return new RagStream(RagClient.ToCitations(hits), StreamAndRecord(ct));
+        await EnsureResolvedAsync(message, ct).ConfigureAwait(false);
+
+        var guard = await _rag.GuardInputAsync(message, _domain, _profile, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagStream(Array.Empty<Citation>(), RagClient.One(_rag.GuardrailRejectionMessage));
+
+        var hits = await _rag.RetrieveAsync(message, _domain, _labels, ct).ConfigureAwait(false);
+        var userMsg = new ChatMessage("user", Internal.Prompt.BuildUser(message, hits));
+
+        // If an output guardrail applies, buffer-then-emit (can't un-send streamed tokens).
+        if (_rag.HasOutputGuardrail(_domain, _profile))
+        {
+            var convo = new List<ChatMessage>(_history) { userMsg };
+            var full = await _rag.CompleteAnswerAsync(convo, ct).ConfigureAwait(false);
+            var og = await _rag.GuardOutputAsync(full, _domain, _profile, ct).ConfigureAwait(false);
+            if (!og.Allowed)
+                return new RagStream(RagClient.ToCitations(hits), RagClient.One(_rag.GuardrailRejectionMessage));
+            _history.Add(userMsg);
+            _history.Add(new ChatMessage("assistant", full));
+            return new RagStream(RagClient.ToCitations(hits), RagClient.One(full));
+        }
+
+        return new RagStream(RagClient.ToCitations(hits), StreamAndRecord(userMsg, ct));
     }
 
-    private async IAsyncEnumerable<string> StreamAndRecord([EnumeratorCancellation] CancellationToken ct)
+    private async IAsyncEnumerable<string> StreamAndRecord(ChatMessage userMsg, [EnumeratorCancellation] CancellationToken ct)
     {
+        var convo = new List<ChatMessage>(_history) { userMsg };
         var sb = new StringBuilder();
-        await foreach (var piece in _rag.StreamAnswerAsync(_history.ToArray(), ct).ConfigureAwait(false))
+        await foreach (var piece in _rag.StreamAnswerAsync(convo.ToArray(), ct).ConfigureAwait(false))
         {
             sb.Append(piece);
             yield return piece;
         }
+        _history.Add(userMsg);
         _history.Add(new ChatMessage("assistant", sb.ToString()));
     }
 }

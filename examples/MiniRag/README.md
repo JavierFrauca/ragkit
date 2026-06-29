@@ -32,4 +32,18 @@ dotnet run --project examples/MiniRag
 ## Qué verás
 - **Panel ①** — pega texto o sube un PDF/DOCX/TXT: se trocea, se vectoriza y se indexa.
 - **Panel ②** — pregunta y recibe la respuesta **en streaming** (token a token) con
-  **citas** a los fragmentos usados.
+  **citas** a los fragmentos usados. Incluye un **prompt de sistema editable en
+  caliente** (se aplica en la siguiente pregunta, sin recrear el cliente).
+
+## Además: enrutado de perfiles y guardarail
+El panel del prompt incluye un interruptor **«Perfiles automáticos»**: cuando está
+activo, antes de responder el tier-2 elige una **lente** (`conciso` / `detallado`)
+según la pregunta y ajusta el tono; la respuesta muestra qué lente se usó. Los
+perfiles se definen en [`Rag.cs`](Rag.cs) (`ProfileInfo`) con su propio prompt.
+Si lo **apagas**, no se enruta y manda el prompt de sistema editable de arriba
+(la *degradación elegante* de la cadena de resolución).
+
+El **guardarail de entrada** va activo de fábrica: checks deterministas que bloquean
+intentos de manipular las instrucciones (p. ej. «ignora las instrucciones…») sin LLM,
+más una red de seguridad LLM (una llamada al tier-2 por pregunta). Para reglas en
+lenguaje natural basta con `opts.Guardrails.Add(new GuardrailRule("…"))`.

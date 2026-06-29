@@ -51,3 +51,16 @@ public static class McpTools
         return conn;
     }
 }
+
+/// <summary>Enables config-driven MCP: connects each <see cref="RagOptions.Mcps"/> entry at startup.</summary>
+public static class McpServers
+{
+    /// <summary>Register the stdio MCP connector so <see cref="RagOptions.Mcps"/> works. Call once
+    /// at startup. Each entry is a command line, e.g. "npx -y @scope/server stdio".</summary>
+    public static void Enable() => McpConnectors.Register(static async (rag, entry, ct) =>
+    {
+        var parts = entry.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return;
+        await rag.AddStdioServerAsync(parts[0], parts.Skip(1).ToArray()).ConfigureAwait(false);
+    });
+}
