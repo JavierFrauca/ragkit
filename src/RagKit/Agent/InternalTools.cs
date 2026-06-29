@@ -128,6 +128,47 @@ internal sealed class IngestTool(RagClient rag, string? defaultDomain) : IRagToo
     }
 }
 
+internal sealed class CreateProfileTool(RagClient rag) : IRagTool
+{
+    public string Name => "create_profile";
+    public string Description => "Crea o actualiza un perfil (lente) dentro de un dominio: un prompt enfocado y, opcionalmente, etiquetas que acotan la búsqueda.";
+    public string ParametersSchema =>
+        """{"type":"object","properties":{"name":{"type":"string"},"domain":{"type":"string"},"description":{"type":"string"},"prompt":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}}},"required":["name","domain"]}""";
+    public async Task<string> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    {
+        var a = Args.Parse(argumentsJson);
+        var name = a.Str("name");
+        var domain = a.Str("domain");
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(domain)) return "error: faltan 'name'/'domain'";
+        var prompt = a.Str("prompt");
+        var labels = a.StrArray("labels");
+        await rag.DefineProfileAsync(new ProfileInfo(name, domain, a.Str("description"),
+            string.IsNullOrWhiteSpace(prompt) ? null : prompt, labels.Count > 0 ? labels : null), ct).ConfigureAwait(false);
+        return $"perfil '{name}' en '{domain}' guardado";
+    }
+}
+
+internal sealed class CreateGuardrailTool(RagClient rag) : IRagTool
+{
+    public string Name => "create_guardrail";
+    public string Description => "Crea una regla de guardarail en lenguaje natural (entrada o salida), opcionalmente acotada a un dominio/perfil.";
+    public string ParametersSchema =>
+        """{"type":"object","properties":{"description":{"type":"string"},"stage":{"type":"string","enum":["input","output"]},"domain":{"type":"string"},"profile":{"type":"string"}},"required":["description"]}""";
+    public async Task<string> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    {
+        var a = Args.Parse(argumentsJson);
+        var desc = a.Str("description");
+        if (string.IsNullOrWhiteSpace(desc)) return "error: falta 'description'";
+        var stage = a.Str("stage").Equals("output", StringComparison.OrdinalIgnoreCase) ? GuardrailStage.Output : GuardrailStage.Input;
+        var domain = a.Str("domain");
+        var profile = a.Str("profile");
+        await rag.DefineGuardrailAsync(new GuardrailRule(desc, stage,
+            string.IsNullOrWhiteSpace(domain) ? null : domain,
+            string.IsNullOrWhiteSpace(profile) ? null : profile), ct).ConfigureAwait(false);
+        return $"regla de guardarail ({stage}) guardada";
+    }
+}
+
 internal static class JsonExt
 {
     public static string? TryGetPropertyDomain(this JsonElement a)

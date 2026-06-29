@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Npgsql;
 using RagKit;
 
@@ -36,6 +37,7 @@ public sealed class PostgresVectorStore : IVectorStore
     private string Meta => $"{_c}_meta";
     private string Domains => $"{_c}_domains";
     private string Labels => $"{_c}_labels";
+    private string Settings => $"{_c}_settings";
 
     public async Task InitializeAsync(string modelId, int dimension, CancellationToken ct = default)
     {
@@ -44,6 +46,7 @@ public sealed class PostgresVectorStore : IVectorStore
             CREATE TABLE IF NOT EXISTS {Meta} (id int PRIMARY KEY DEFAULT 1, model_id text, dimension int);
             CREATE TABLE IF NOT EXISTS {Domains} (name text PRIMARY KEY, description text);
             CREATE TABLE IF NOT EXISTS {Labels} (name text PRIMARY KEY, description text);
+            CREATE TABLE IF NOT EXISTS {Settings} (name text PRIMARY KEY, value text);
             CREATE TABLE IF NOT EXISTS {Chunks} (
                 id uuid PRIMARY KEY, source text, body text, domain text, labels text[], embedding vector({dimension}));
             """, ct).ConfigureAwait(false);
@@ -98,6 +101,33 @@ public sealed class PostgresVectorStore : IVectorStore
         while (await r.ReadAsync(ct).ConfigureAwait(false)) list.Add(new LabelInfo(r.GetString(0), r.GetString(1)));
         return list;
     }
+
+    public async Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+        => Deserialize<ProfileInfo>(await GetSettingAsync("profiles", ct).ConfigureAwait(false));
+
+    public Task SaveProfilesAsync(IReadOnlyList<ProfileInfo> profiles, CancellationToken ct = default)
+        => SaveSettingAsync("profiles", JsonSerializer.Serialize(profiles), ct);
+
+    public async Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+        => Deserialize<GuardrailRule>(await GetSettingAsync("guardrails", ct).ConfigureAwait(false));
+
+    public Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default)
+        => SaveSettingAsync("guardrails", JsonSerializer.Serialize(guardrails), ct);
+
+    private Task SaveSettingAsync(string name, string value, CancellationToken ct)
+        => Exec($"INSERT INTO {Settings}(name,value) VALUES(@n,@v) ON CONFLICT (name) DO UPDATE SET value=EXCLUDED.value",
+            ct, ("n", name), ("v", value));
+
+    private async Task<string?> GetSettingAsync(string name, CancellationToken ct)
+    {
+        await using var cmd = _ds.CreateCommand($"SELECT value FROM {Settings} WHERE name=@n");
+        cmd.Parameters.AddWithValue("n", name);
+        var r = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return r as string;
+    }
+
+    private static IReadOnlyList<T> Deserialize<T>(string? json)
+        => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
     public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
     {

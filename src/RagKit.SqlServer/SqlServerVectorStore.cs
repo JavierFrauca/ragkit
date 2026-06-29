@@ -39,6 +39,7 @@ public sealed class SqlServerVectorStore : IVectorStore
     private string Meta => $"{_c}_meta";
     private string Domains => $"{_c}_domains";
     private string Labels => $"{_c}_labels";
+    private string Settings => $"{_c}_settings";
 
     public async Task InitializeAsync(string modelId, int dimension, CancellationToken ct = default)
     {
@@ -49,6 +50,7 @@ public sealed class SqlServerVectorStore : IVectorStore
             IF OBJECT_ID('{Meta}') IS NULL CREATE TABLE {Meta}(id int PRIMARY KEY, model_id nvarchar(200), dimension int);
             IF OBJECT_ID('{Domains}') IS NULL CREATE TABLE {Domains}(name nvarchar(200) PRIMARY KEY, description nvarchar(max));
             IF OBJECT_ID('{Labels}') IS NULL CREATE TABLE {Labels}(name nvarchar(200) PRIMARY KEY, description nvarchar(max));
+            IF OBJECT_ID('{Settings}') IS NULL CREATE TABLE {Settings}(name nvarchar(100) PRIMARY KEY, value nvarchar(max));
             IF OBJECT_ID('{Chunks}') IS NULL CREATE TABLE {Chunks}(
                 id uniqueidentifier PRIMARY KEY, source nvarchar(400), body nvarchar(max),
                 domain nvarchar(200) NULL, labels nvarchar(max) NULL, embedding vector({dimension}));
@@ -112,6 +114,39 @@ public sealed class SqlServerVectorStore : IVectorStore
         while (await r.ReadAsync(ct).ConfigureAwait(false)) list.Add(new LabelInfo(r.GetString(0), r.GetString(1)));
         return list;
     }
+
+    public async Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+        => Deserialize<ProfileInfo>(await GetSettingAsync("profiles", ct).ConfigureAwait(false));
+
+    public Task SaveProfilesAsync(IReadOnlyList<ProfileInfo> profiles, CancellationToken ct = default)
+        => SaveSettingAsync("profiles", JsonSerializer.Serialize(profiles), ct);
+
+    public async Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+        => Deserialize<GuardrailRule>(await GetSettingAsync("guardrails", ct).ConfigureAwait(false));
+
+    public Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default)
+        => SaveSettingAsync("guardrails", JsonSerializer.Serialize(guardrails), ct);
+
+    private async Task SaveSettingAsync(string name, string value, CancellationToken ct)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await Exec(con, $"""
+            MERGE {Settings} AS t USING (SELECT @n AS name) AS s ON t.name=s.name
+            WHEN MATCHED THEN UPDATE SET value=@v
+            WHEN NOT MATCHED THEN INSERT(name,value) VALUES(@n,@v);
+            """, ct, ("@n", name), ("@v", value)).ConfigureAwait(false);
+    }
+
+    private async Task<string?> GetSettingAsync(string name, CancellationToken ct)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand($"SELECT value FROM {Settings} WHERE name=@n", con);
+        cmd.Parameters.AddWithValue("@n", name);
+        return await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+    }
+
+    private static IReadOnlyList<T> Deserialize<T>(string? json)
+        => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
     public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
     {

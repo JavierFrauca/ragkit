@@ -1,4 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Conector de almacén vectorial SQL Server 2025 (tipo VECTOR) para RagKit. Habilítalo con SqlServerStore.Enable() y selecciónalo vía VectorStoreKind.SqlServer.</Description>
+    <PackageTags>rag;ragkit;vector-store;sqlserver;sql-server-2025;vector;mssql</PackageTags>
+  </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RagKit\RagKit.csproj" />
@@ -8,10 +13,8 @@
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
   </ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 
 </Project>

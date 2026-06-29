@@ -1,4 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Extractores de texto PDF (PdfPig) y DOCX (OpenXml) para RagKit. Habilítalos con DocumentExtractors.Enable() y RagClient.IngestFileAsync leerá esos formatos.</Description>
+    <PackageTags>rag;ragkit;pdf;docx;text-extraction;pdfpig;openxml</PackageTags>
+  </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RagKit\RagKit.csproj" />
@@ -9,10 +14,8 @@
     <PackageReference Include="PdfPig" Version="0.1.14" />
   </ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 
 </Project>

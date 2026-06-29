@@ -1,21 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <LangVersion>latest</LangVersion>
-
-    <!-- NuGet package metadata -->
     <PackageId>RagKit</PackageId>
-    <Version>0.1.0-alpha</Version>
-    <Authors>RagKit</Authors>
-    <Description>RAG en una línea: configura un LLM (compatible OpenAI), ingesta documentos y pregunta. Embeddings, troceado, recuperación y prompt resueltos por ti.</Description>
-    <PackageTags>rag;llm;embeddings;ai;openai;retrieval</PackageTags>
+    <Description>RAG agéntico llave en mano para .NET: configura dos LLM (compatible OpenAI), define dominios/perfiles/guardarails, ingesta documentos y pregunta. Embeddings, troceado, recuperación híbrida y enrutado en query-time resueltos por ti.</Description>
+    <PackageTags>rag;llm;embeddings;ai;openai;retrieval;agent;vector;mcp;guardrails</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="RagKit.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The repo README is the package README for the core. -->
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
 </Project>

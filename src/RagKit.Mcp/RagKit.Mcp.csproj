@@ -1,13 +1,16 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Cliente MCP (Model Context Protocol) por stdio para RagKit: conecta servidores MCP externos y registra sus herramientas en el bucle de agente. Cliente JSON-RPC propio, sin SDK.</Description>
+    <PackageTags>rag;ragkit;mcp;model-context-protocol;tools;agent;json-rpc</PackageTags>
+  </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RagKit\RagKit.csproj" />
   </ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 
 </Project>

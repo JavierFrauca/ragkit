@@ -82,6 +82,31 @@ public sealed class QdrantVectorStore : IVectorStore
         return pts.Select(p => new LabelInfo(Str(p, "name"), Str(p, "description"))).ToList();
     }
 
+    public async Task<IReadOnlyList<ProfileInfo>> ListProfilesAsync(CancellationToken ct = default)
+        => Deserialize<ProfileInfo>(await GetSettingAsync("profiles", ct).ConfigureAwait(false));
+
+    public Task SaveProfilesAsync(IReadOnlyList<ProfileInfo> profiles, CancellationToken ct = default)
+        => SaveSettingAsync("profiles", JsonSerializer.Serialize(profiles), ct);
+
+    public async Task<IReadOnlyList<GuardrailRule>> ListGuardrailsAsync(CancellationToken ct = default)
+        => Deserialize<GuardrailRule>(await GetSettingAsync("guardrails", ct).ConfigureAwait(false));
+
+    public Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default)
+        => SaveSettingAsync("guardrails", JsonSerializer.Serialize(guardrails), ct);
+
+    private Task SaveSettingAsync(string name, string json, CancellationToken ct)
+        => UpsertAsync(_catalog, Uuid("settings:" + name), new float[] { 0f },
+            new { kind = "settings", name, json }, ct);
+
+    private async Task<string?> GetSettingAsync(string name, CancellationToken ct)
+    {
+        var pay = await GetPointPayloadAsync(_catalog, Uuid("settings:" + name), ct).ConfigureAwait(false);
+        return pay is null ? null : Str(pay.Value, "json");
+    }
+
+    private static IReadOnlyList<T> Deserialize<T>(string? json)
+        => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
+
     public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
         => UpsertAsync(_chunks, Guid.NewGuid().ToString(), vector,
             new { source, text, domain, labels = labels.ToArray() }, ct);

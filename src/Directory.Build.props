@@ -1,16 +1,48 @@
 <Project>
-  <!-- Shared NuGet metadata for all RagKit packages under src/. -->
+
+  <!-- Shared build settings for every RagKit library under src/. Tests and the
+       example live outside src/, so they don't inherit any of this. -->
   <PropertyGroup>
-    <Version>0.1.0-alpha</Version>
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <!-- Shared NuGet package metadata. Per-package Description and PackageTags are
+       set in each .csproj; everything common lives here (single source of truth). -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
     <Authors>JavierFrauca</Authors>
+    <Company>JavierFrauca</Company>
     <Product>RagKit</Product>
+    <Copyright>Copyright © JavierFrauca</Copyright>
     <PackageProjectUrl>https://github.com/JavierFrauca/ragkit</PackageProjectUrl>
     <RepositoryUrl>https://github.com/JavierFrauca/ragkit</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageTags>rag;llm;embeddings;ai;retrieval;mcp;vector</PackageTags>
-    <Description>RagKit — RAG agéntico llave en mano para .NET: configura un LLM, define dominios/etiquetas, ingesta y pregunta.</Description>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageReleaseNotes>Consulta CHANGELOG.md en el repositorio.</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <!-- Deterministic builds + Source Link + symbol packages for a good
+       debugging experience for consumers. -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>portable</DebugType>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Source Link is build-only (PrivateAssets=All): never a package dependency. -->
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <!-- The shared icon is packed into every package. -->
+    <None Include="$(MSBuildThisFileDirectory)..\icon.png" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
 </Project>

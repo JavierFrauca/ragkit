@@ -1,4 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Embeddings ONNX locales para RagKit (sentence-transformers, p. ej. all-MiniLM-L6-v2): tokenizer BERT + mean-pooling + L2, in-process y privado. Habilítalo con OnnxEmbedding.Enable().</Description>
+    <PackageTags>rag;ragkit;embeddings;onnx;onnxruntime;sentence-transformers;local;ai</PackageTags>
+  </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RagKit\RagKit.csproj" />
@@ -9,10 +14,8 @@
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
   </ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 
 </Project>

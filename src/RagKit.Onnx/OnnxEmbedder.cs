@@ -29,9 +29,10 @@ public static class OnnxEmbedding
     /// model into a local cache the first time (then reused offline) and returns an
     /// <see cref="EmbedderConfig"/> ready to assign to <c>RagOptions.Embedder</c>.
     /// Semantic and private (runs in-process), unlike the non-semantic core fallback.
-    /// <para>For multilingual corpora, point <c>EmbedderConfig.Model</c> at a model
-    /// of your choice instead (any export with <c>model.onnx</c> + WordPiece
-    /// <c>vocab.txt</c>).</para>
+    /// <para>For multilingual corpora, point <c>EmbedderConfig.Model</c> at a model of
+    /// your choice instead: any export with <c>model.onnx</c> plus either a WordPiece
+    /// <c>vocab.txt</c> or a SentencePiece model (<c>sentencepiece.bpe.model</c>/
+    /// <c>spiece.model</c>/<c>tokenizer.model</c>), e.g. multilingual-e5-small.</para>
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static async Task<EmbedderConfig> UseDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
@@ -73,16 +74,21 @@ public static class OnnxEmbedding
 }
 
 /// <summary>
-/// Local, in-process embedder running a sentence-transformers ONNX model
-/// (e.g. all-MiniLM-L6-v2) with a BERT WordPiece tokenizer, mean pooling over the
-/// token embeddings and L2 normalization. No external service; privacy stays on-prem.
+/// Local, in-process embedder running a sentence-transformers ONNX model with mean
+/// pooling over the token embeddings and L2 normalization. The tokenizer is picked
+/// from the model folder: <b>WordPiece</b> (<c>vocab.txt</c>, e.g. all-MiniLM-L6-v2)
+/// or <b>SentencePiece</b> (<c>sentencepiece.bpe.model</c>/<c>spiece.model</c>/
+/// <c>tokenizer.model</c>, e.g. multilingual-e5). No external service; privacy stays on-prem.
 /// </summary>
 public sealed class OnnxEmbedder : IEmbedder, IDisposable
 {
+    private static readonly string[] SentencePieceFiles = { "sentencepiece.bpe.model", "spiece.model", "tokenizer.model" };
+
     private readonly string _modelPath;
-    private readonly string _vocabPath;
+    private readonly string _tokenizerPath;
+    private readonly bool _isSentencePiece;
     private InferenceSession? _session;
-    private BertTokenizer? _tokenizer;
+    private Tokenizer? _tokenizer;
     private bool _needsTokenTypes;
 
     public OnnxEmbedder(string modelDirOrPath)
@@ -91,9 +97,14 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         if (!File.Exists(_modelPath))
             throw new FileNotFoundException($"No se encontró el modelo ONNX en '{_modelPath}'.");
         var dir = Path.GetDirectoryName(Path.GetFullPath(_modelPath))!;
-        _vocabPath = Path.Combine(dir, "vocab.txt");
-        if (!File.Exists(_vocabPath))
-            throw new FileNotFoundException($"No se encontró vocab.txt junto al modelo en '{dir}'.");
+
+        var vocab = Path.Combine(dir, "vocab.txt");
+        var sp = SentencePieceFiles.Select(f => Path.Combine(dir, f)).FirstOrDefault(File.Exists);
+        if (File.Exists(vocab)) { _tokenizerPath = vocab; _isSentencePiece = false; }
+        else if (sp is not null) { _tokenizerPath = sp; _isSentencePiece = true; }
+        else throw new FileNotFoundException(
+            $"No se encontró tokenizer (vocab.txt o sentencepiece.*/spiece.model/tokenizer.model) junto al modelo en '{dir}'.");
+
         ModelId = "onnx:" + new DirectoryInfo(dir).Name;
     }
 
@@ -104,11 +115,17 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     public Task InitializeAsync(CancellationToken ct = default) => Task.Run(() =>
     {
         if (_session is not null) return;
-        _tokenizer = BertTokenizer.Create(_vocabPath);
+        _tokenizer = _isSentencePiece ? CreateSentencePiece(_tokenizerPath) : BertTokenizer.Create(_tokenizerPath);
         _session = new InferenceSession(_modelPath);
         _needsTokenTypes = _session.InputMetadata.ContainsKey("token_type_ids");
         Dimension = EmbedCore("warmup").Length;
     }, ct);
+
+    private static Tokenizer CreateSentencePiece(string path)
+    {
+        using var fs = File.OpenRead(path);
+        return SentencePieceTokenizer.Create(fs, addBeginningOfSentence: true, addEndOfSentence: true, specialTokens: null);
+    }
 
     public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) => Task.Run(() => EmbedCore(text), ct);
 
