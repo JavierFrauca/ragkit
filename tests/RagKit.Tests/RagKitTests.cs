@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using RagKit;
 using RagKit.Internal;
 using RagKit.Extractors;
@@ -732,6 +732,14 @@ public class RagKitTests
         Assert.NotEmpty(await store.SearchAsync(await emb.EmbedAsync("IVA"), 5, "fiscal", new[] { "iva" }));
         await Assert.ThrowsAsync<EmbeddingMismatchException>(
             () => new PostgresVectorStore(cs, coll).InitializeAsync("otro", 128));
+
+        // FR-01 + FR-05.
+        Assert.Equal(1, await store.DeleteBySourceAsync("doc.txt"));
+        Assert.Empty(await store.EnumerateAsync());
+        await store.SaveCatalogEntryAsync("manifest", "doc.txt", "hash-1");
+        Assert.Equal("hash-1", await store.GetCatalogEntryAsync("manifest", "doc.txt"));
+        await store.DeleteCatalogEntryAsync("manifest", "doc.txt");
+        Assert.Null(await store.GetCatalogEntryAsync("manifest", "doc.txt"));
     }
 
     [Fact]
@@ -756,6 +764,14 @@ public class RagKitTests
 
         await Assert.ThrowsAsync<EmbeddingMismatchException>(
             () => new SqlServerVectorStore(cs, coll).InitializeAsync("otro", 128));
+
+        // FR-01 + FR-05.
+        Assert.Equal(1, await store.DeleteBySourceAsync("doc.txt"));
+        Assert.Empty(await store.EnumerateAsync());
+        await store.SaveCatalogEntryAsync("manifest", "doc.txt", "hash-1");
+        Assert.Equal("hash-1", await store.GetCatalogEntryAsync("manifest", "doc.txt"));
+        await store.DeleteCatalogEntryAsync("manifest", "doc.txt");
+        Assert.Null(await store.GetCatalogEntryAsync("manifest", "doc.txt"));
     }
 
     [Fact]
@@ -784,5 +800,267 @@ public class RagKitTests
         // Guard: reopening the same collection with a different dimension must throw.
         await Assert.ThrowsAsync<EmbeddingMismatchException>(
             () => new QdrantVectorStore("http://127.0.0.1:6333", coll).InitializeAsync("other", 128));
+
+        // FR-01: delete by source.
+        Assert.Equal(1, await store.DeleteBySourceAsync("doc.txt"));
+        Assert.Empty(await store.EnumerateAsync());
+
+        // FR-05: generic catalog round-trips and doesn't collide with the domain namespace.
+        await store.SaveCatalogEntryAsync("domain", "fiscal", "{\"not\":\"a real domain\"}");
+        Assert.Equal("{\"not\":\"a real domain\"}", await store.GetCatalogEntryAsync("domain", "fiscal"));
+        Assert.Contains(await store.ListDomainsAsync(), d => d.Name == "fiscal"); // untouched by the catalog write
+        await store.DeleteCatalogEntryAsync("domain", "fiscal");
+        Assert.Null(await store.GetCatalogEntryAsync("domain", "fiscal"));
+    }
+
+    // --- FR-01: delete by source ---------------------------------------------
+
+    [Fact]
+    public async Task DeleteBySourceAsync_removes_only_the_matching_source_and_domain()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-del-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        var emb = new LocalEmbedder();
+        await store.InitializeAsync(emb.ModelId, emb.Dimension);
+
+        await store.AddChunkAsync("a.txt", "texto a", "docs", Array.Empty<string>(), await emb.EmbedAsync("texto a"));
+        await store.AddChunkAsync("a.txt", "texto a otro dominio", "otros", Array.Empty<string>(), await emb.EmbedAsync("texto a otro dominio"));
+        await store.AddChunkAsync("b.txt", "texto b", "docs", Array.Empty<string>(), await emb.EmbedAsync("texto b"));
+
+        Assert.Equal(1, await store.DeleteBySourceAsync("a.txt", domain: "docs"));
+        var remaining = await store.EnumerateAsync();
+        Assert.Equal(2, remaining.Count);
+        Assert.DoesNotContain(remaining, c => c.Source == "a.txt" && c.Domain == "docs");
+        Assert.Contains(remaining, c => c.Source == "a.txt" && c.Domain == "otros"); // other domain untouched
+
+        Assert.Equal(1, await store.DeleteBySourceAsync("a.txt")); // no domain -> across all domains
+        Assert.Single(await store.EnumerateAsync());
+
+        Assert.Equal(0, await store.DeleteBySourceAsync("nope.txt")); // nothing to remove
+    }
+
+    [Fact]
+    public async Task RemoveDocumentAsync_makes_the_document_stop_being_retrievable()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { TopK = 3 });
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("el contrato laboral indefinido regula el empleo fijo", "laboral.txt", domain: "docs");
+        await rag.IngestAsync("la receta de pizza con piña lleva masa y queso", "cocina.txt", domain: "docs");
+
+        var removed = await rag.RemoveDocumentAsync("laboral.txt", "docs");
+        Assert.Equal(1, removed);
+
+        var ans = await rag.AskAsync("contrato laboral", domain: "docs");
+        Assert.DoesNotContain(ans.Citations, c => c.Source == "laboral.txt");
+        Assert.Equal(1, await rag.ChunkCountAsync());
+    }
+
+    // --- FR-02: document inventory -------------------------------------------
+
+    [Fact]
+    public async Task ListDocumentsAsync_aggregates_chunks_into_one_entry_per_source()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.DefineDomainAsync("otros");
+        // A long text forces the chunker to split into more than one chunk for "laboral.txt".
+        var longText = string.Join(" ", Enumerable.Repeat("El contrato laboral indefinido regula el empleo fijo.", 60));
+        var before = DateTime.UtcNow;
+        await rag.IngestAsync(longText, "laboral.txt", domain: "docs");
+        await rag.IngestAsync("disposiciones generales del convenio colectivo", "gen.txt", domain: "otros");
+        var after = DateTime.UtcNow;
+
+        var all = await rag.ListDocumentsAsync();
+        Assert.Equal(2, all.Count);
+        var laboral = Assert.Single(all, d => d.Source == "laboral.txt");
+        Assert.Equal("docs", laboral.Domain);
+        Assert.True(laboral.ChunkCount > 1, "el texto largo debería trocearse en más de un chunk");
+        Assert.InRange(laboral.IngestedAtUtc, before, after);
+
+        var scoped = await rag.ListDocumentsAsync("otros");
+        Assert.Single(scoped);
+        Assert.Equal("gen.txt", scoped[0].Source);
+    }
+
+    // --- FR-03: idempotent ingestion by content hash -------------------------
+
+    [Fact]
+    public async Task IngestIfChangedAsync_is_a_cheap_noop_when_content_is_identical()
+    {
+        var answer = new FakeChat("ok");
+        var classifier = new FakeChat("{}");
+        var rag = await BuildAsync(answer, classifier, new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("docs");
+
+        var first = await rag.IngestIfChangedAsync("el contrato laboral indefinido regula el empleo", "laboral.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Ingested, first.Outcome);
+        Assert.False(first.Rejected);
+        Assert.Equal(1, await rag.ChunkCountAsync());
+
+        var second = await rag.IngestIfChangedAsync("el contrato laboral indefinido regula el empleo", "laboral.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Unchanged, second.Outcome);
+        Assert.Equal(0, second.ChunkCount);
+        Assert.Equal(1, await rag.ChunkCountAsync()); // no duplicate chunks written
+        Assert.Equal(0, classifier.Calls); // AutoClassify is off, but this also proves no re-classification happened
+    }
+
+    [Fact]
+    public async Task IngestIfChangedAsync_replaces_chunks_when_content_differs()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false, TopK = 3 });
+        await rag.DefineDomainAsync("docs");
+
+        await rag.IngestIfChangedAsync("version inicial del documento", "doc.txt", domain: "docs");
+        Assert.Equal(1, await rag.ChunkCountAsync());
+
+        var updated = await rag.IngestIfChangedAsync("version actualizada y distinta del documento", "doc.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Ingested, updated.Outcome);
+        Assert.Equal(1, await rag.ChunkCountAsync()); // old chunk replaced, not accumulated
+
+        var ans = await rag.AskAsync("documento", domain: "docs");
+        Assert.Contains("actualizada", ans.Citations[0].Snippet);
+    }
+
+    // --- FR-04: folder ingestion ----------------------------------------------
+
+    [Fact]
+    public async Task IngestFolderAsync_ingests_every_supported_file_and_reports_progress_incrementally()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-folder-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(tmp, "sub"));
+        File.WriteAllText(Path.Combine(tmp, "a.txt"), "contenido del fichero a");
+        File.WriteAllText(Path.Combine(tmp, "sub", "b.md"), "contenido del fichero b");
+        File.WriteAllText(Path.Combine(tmp, "ignore.bin"), "no debería ingestarse");
+
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("docs");
+
+        var results = new List<IngestResult>();
+        await foreach (var r in rag.IngestFolderAsync(tmp, "docs"))
+            results.Add(r);
+
+        Assert.Equal(2, results.Count); // ignore.bin skipped
+        Assert.Contains(results, r => r.Source == "a.txt" && r.Outcome == IngestOutcome.Ingested);
+        Assert.Contains(results, r => r.Source == "b.md" && r.Outcome == IngestOutcome.Ingested);
+    }
+
+    [Fact]
+    public async Task IngestFolderAsync_non_recursive_skips_subfolders()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-folder-flat-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(tmp, "sub"));
+        File.WriteAllText(Path.Combine(tmp, "a.txt"), "contenido del fichero a");
+        File.WriteAllText(Path.Combine(tmp, "sub", "b.txt"), "contenido del fichero b");
+
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("docs");
+
+        var results = new List<IngestResult>();
+        await foreach (var r in rag.IngestFolderAsync(tmp, "docs", recursive: false))
+            results.Add(r);
+
+        Assert.Single(results);
+        Assert.Equal("a.txt", results[0].Source);
+    }
+
+    // --- FR-05: generic catalog exposed to the consumer ------------------------
+
+    [Fact]
+    public async Task Catalog_entries_roundtrip_through_RagClient()
+    {
+        var rag = await BuildAsync(new FakeChat("x"), new FakeChat("{}"));
+        Assert.Null(await rag.GetCatalogEntryAsync("app-manifest", "k1"));
+
+        await rag.SaveCatalogEntryAsync("app-manifest", "k1", "{\"v\":1}");
+        Assert.Equal("{\"v\":1}", await rag.GetCatalogEntryAsync("app-manifest", "k1"));
+
+        await rag.SaveCatalogEntryAsync("app-manifest", "k1", "{\"v\":2}"); // overwrite
+        Assert.Equal("{\"v\":2}", await rag.GetCatalogEntryAsync("app-manifest", "k1"));
+
+        await rag.DeleteCatalogEntryAsync("app-manifest", "k1");
+        Assert.Null(await rag.GetCatalogEntryAsync("app-manifest", "k1"));
+    }
+
+    [Fact]
+    public async Task Catalog_entries_persist_across_reopen()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-catalog-" + Guid.NewGuid().ToString("N"));
+        var emb = new LocalEmbedder();
+
+        var s1 = new InMemoryVectorStore(dir);
+        await s1.InitializeAsync(emb.ModelId, emb.Dimension);
+        await s1.SaveCatalogEntryAsync("manifest", "doc.txt", "abc123");
+
+        var s2 = new InMemoryVectorStore(dir);
+        await s2.InitializeAsync(emb.ModelId, emb.Dimension);
+        Assert.Equal("abc123", await s2.GetCatalogEntryAsync("manifest", "doc.txt"));
+    }
+
+    // --- FR-06: three-state IngestOutcome -------------------------------------
+
+    [Fact]
+    public async Task IngestOutcome_distinguishes_ingested_rejected_and_unchanged()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+
+        var noDomains = await rag.IngestAsync("texto", "d.txt");
+        Assert.Equal(IngestOutcome.Rejected, noDomains.Outcome);
+        Assert.True(noDomains.Rejected); // back-compat: still readable as a bool
+
+        await rag.DefineDomainAsync("docs");
+        var ingested = await rag.IngestIfChangedAsync("contenido", "d.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Ingested, ingested.Outcome);
+        Assert.False(ingested.Rejected);
+
+        var unchanged = await rag.IngestIfChangedAsync("contenido", "d.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Unchanged, unchanged.Outcome);
+        Assert.False(unchanged.Rejected); // Unchanged is not a rejection
+    }
+
+    // --- FR-07: multi-turn ask with explicit history --------------------------
+
+    [Fact]
+    public async Task AskAsync_with_explicit_history_grounds_on_prior_turns_without_a_session_object()
+    {
+        var answer = new FakeChat("respuesta con contexto");
+        var rag = await BuildAsync(answer, new FakeChat("{}"), new RagOptions { TopK = 3 });
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("el contrato laboral indefinido regula el empleo fijo", "laboral.txt", domain: "docs");
+
+        var history = new List<ChatMessage>
+        {
+            new("user", "hola"),
+            new("assistant", "hola, ¿en qué puedo ayudarte?"),
+        };
+
+        var ans = await rag.AskAsync("contrato laboral", history, domain: "docs");
+        Assert.Equal("respuesta con contexto", ans.Answer);
+        Assert.Equal("laboral.txt", ans.Citations[0].Source);
+
+        // The prior turns were forwarded to the model as-is, ahead of this turn's message.
+        var sent = answer.Last!;
+        Assert.Equal("user", sent[1].Role);
+        Assert.Equal("hola", sent[1].Content);
+        Assert.Equal("assistant", sent[2].Role);
+        Assert.Contains("Pregunta: contrato laboral", sent[3].Content);
+    }
+
+    [Fact]
+    public async Task AskAsync_with_explicit_history_is_a_pure_function_no_shared_state_between_calls()
+    {
+        var answer = new FakeChat("ok");
+        var rag = await BuildAsync(answer, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido", "d.txt", domain: "docs");
+
+        // Two independent calls with different histories over the SAME RagClient must
+        // not leak state into each other (no _history field to mutate, unlike ChatSession).
+        await rag.AskAsync("q1", new[] { new ChatMessage("user", "primera conversación") }, domain: "docs");
+        var firstConvoLength = answer.Last!.Count;
+
+        await rag.AskAsync("q2", Array.Empty<ChatMessage>(), domain: "docs");
+        var secondConvoLength = answer.Last!.Count;
+
+        Assert.True(secondConvoLength < firstConvoLength, "una historia vacía no debería arrastrar turnos de la llamada anterior");
     }
 }

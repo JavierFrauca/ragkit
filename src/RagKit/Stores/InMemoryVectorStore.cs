@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using RagKit.Internal;
 
 namespace RagKit;
@@ -11,7 +11,7 @@ namespace RagKit;
 /// </summary>
 public sealed class InMemoryVectorStore : IVectorStore
 {
-    private sealed record Item(string Source, string Text, string? Domain, string[] Labels, float[] Vec);
+    private sealed record Item(string Source, string Text, string? Domain, string[] Labels, float[] Vec, DateTime IngestedAtUtc);
 
     private sealed class Meta
     {
@@ -21,6 +21,8 @@ public sealed class InMemoryVectorStore : IVectorStore
         public List<LabelInfo> Labels { get; set; } = new();
         public List<ProfileInfo> Profiles { get; set; } = new();
         public List<GuardrailRule> Guardrails { get; set; } = new();
+        /// <summary>Consumer-owned catalog entries: kind -> key -> json.</summary>
+        public Dictionary<string, Dictionary<string, string>> Catalog { get; set; } = new();
     }
 
     private readonly string _metaPath;
@@ -118,12 +120,13 @@ public sealed class InMemoryVectorStore : IVectorStore
         return Task.CompletedTask;
     }
 
-    public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
+    public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
+        DateTime ingestedAtUtc = default, CancellationToken ct = default)
     {
         lock (_lock)
         {
             EnsureInit();
-            _items.Add(new Item(source, text, domain, labels.ToArray(), vector));
+            _items.Add(new Item(source, text, domain, labels.ToArray(), vector, ingestedAtUtc));
         }
         return Task.CompletedTask;
     }
@@ -134,7 +137,7 @@ public sealed class InMemoryVectorStore : IVectorStore
         {
             EnsureInit();
             foreach (var c in chunks)
-                _items.Add(new Item(c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector));
+                _items.Add(new Item(c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector, c.IngestedAtUtc));
         }
         return Task.CompletedTask;
     }
@@ -166,7 +169,47 @@ public sealed class InMemoryVectorStore : IVectorStore
     {
         lock (_lock)
             return Task.FromResult<IReadOnlyList<StoredChunk>>(
-                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels)).ToList());
+                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc)).ToList());
+    }
+
+    public Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            int removed = _items.RemoveAll(i =>
+                string.Equals(i.Source, source, StringComparison.Ordinal) &&
+                (domain is null || string.Equals(i.Domain, domain, StringComparison.OrdinalIgnoreCase)));
+            return Task.FromResult(removed);
+        }
+    }
+
+    public Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        lock (_lock)
+            return Task.FromResult(_meta.Catalog.TryGetValue(kind, out var byKey) && byKey.TryGetValue(key, out var json) ? json : null);
+    }
+
+    public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            EnsureInit();
+            if (!_meta.Catalog.TryGetValue(kind, out var byKey))
+                _meta.Catalog[kind] = byKey = new Dictionary<string, string>();
+            byKey[key] = json;
+            Save();
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            if (_meta.Catalog.TryGetValue(kind, out var byKey) && byKey.Remove(key))
+                Save();
+        }
+        return Task.CompletedTask;
     }
 
     private void EnsureInit()

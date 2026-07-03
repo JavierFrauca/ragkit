@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -38,6 +38,7 @@ public sealed class PostgresVectorStore : IVectorStore
     private string Domains => $"{_c}_domains";
     private string Labels => $"{_c}_labels";
     private string Settings => $"{_c}_settings";
+    private string Catalog => $"{_c}_catalog";
 
     public async Task InitializeAsync(string modelId, int dimension, CancellationToken ct = default)
     {
@@ -47,8 +48,10 @@ public sealed class PostgresVectorStore : IVectorStore
             CREATE TABLE IF NOT EXISTS {Domains} (name text PRIMARY KEY, description text);
             CREATE TABLE IF NOT EXISTS {Labels} (name text PRIMARY KEY, description text);
             CREATE TABLE IF NOT EXISTS {Settings} (name text PRIMARY KEY, value text);
+            CREATE TABLE IF NOT EXISTS {Catalog} (kind text, key_name text, value text, PRIMARY KEY(kind, key_name));
             CREATE TABLE IF NOT EXISTS {Chunks} (
-                id uuid PRIMARY KEY, source text, body text, domain text, labels text[], embedding vector({dimension}));
+                id uuid PRIMARY KEY, source text, body text, domain text, labels text[], embedding vector({dimension}),
+                ingested_at_utc timestamptz NULL);
             """, ct).ConfigureAwait(false);
 
         await using (var read = _ds.CreateCommand($"SELECT model_id, dimension FROM {Meta} WHERE id = 1"))
@@ -129,16 +132,18 @@ public sealed class PostgresVectorStore : IVectorStore
     private static IReadOnlyList<T> Deserialize<T>(string? json)
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
-    public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
+    public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
+        DateTime ingestedAtUtc = default, CancellationToken ct = default)
     {
         await using var cmd = _ds.CreateCommand(
-            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding) VALUES(@id,@s,@b,@dom,@lbl,@emb::vector)");
+            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES(@id,@s,@b,@dom,@lbl,@emb::vector,@ing)");
         cmd.Parameters.AddWithValue("id", Guid.NewGuid());
         cmd.Parameters.AddWithValue("s", source);
         cmd.Parameters.AddWithValue("b", text);
         cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
         cmd.Parameters.AddWithValue("lbl", labels.ToArray());
         cmd.Parameters.AddWithValue("emb", Literal(vector));
+        cmd.Parameters.AddWithValue("ing", ingestedAtUtc == default ? (object)DBNull.Value : ingestedAtUtc);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -177,15 +182,40 @@ public sealed class PostgresVectorStore : IVectorStore
     public async Task<IReadOnlyList<StoredChunk>> EnumerateAsync(CancellationToken ct = default)
     {
         var list = new List<StoredChunk>();
-        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels FROM {Chunks}");
+        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels, ingested_at_utc FROM {Chunks}");
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels));
+            var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt));
         }
         return list;
     }
+
+    public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
+    {
+        await using var cmd = _ds.CreateCommand($"DELETE FROM {Chunks} WHERE source=@s AND (@dom IS NULL OR domain=@dom)");
+        cmd.Parameters.AddWithValue("s", source);
+        cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        await using var cmd = _ds.CreateCommand($"SELECT value FROM {Catalog} WHERE kind=@k AND key_name=@n");
+        cmd.Parameters.AddWithValue("k", kind);
+        cmd.Parameters.AddWithValue("n", key);
+        var r = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return r as string;
+    }
+
+    public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
+        => Exec($"INSERT INTO {Catalog}(kind,key_name,value) VALUES(@k,@n,@v) ON CONFLICT (kind,key_name) DO UPDATE SET value=EXCLUDED.value",
+            ct, ("k", kind), ("n", key), ("v", json));
+
+    public Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+        => Exec($"DELETE FROM {Catalog} WHERE kind=@k AND key_name=@n", ct, ("k", kind), ("n", key));
 
     // --- helpers -------------------------------------------------------------
 

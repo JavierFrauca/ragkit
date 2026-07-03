@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using System.Text;
 using RagKit.Agent;
 using RagKit.Internal;
@@ -217,7 +217,7 @@ public sealed class RagClient
         source ??= "doc";
         var domains = await _store.ListDomainsAsync(ct).ConfigureAwait(false);
         if (domains.Count == 0)
-            return new IngestResult(source, null, Array.Empty<string>(), 0, Rejected: true,
+            return new IngestResult(source, null, Array.Empty<string>(), 0, IngestOutcome.Rejected,
                 Reason: "No hay dominios definidos: define al menos uno antes de ingestar.");
 
         var finalLabels = new List<string>(labels ?? Enumerable.Empty<string>());
@@ -233,7 +233,7 @@ public sealed class RagClient
             foreach (var l in ls) if (!finalLabels.Contains(l)) finalLabels.Add(l);
 
             if (domain is null || confidence < _options.ClassificationThreshold)
-                return new IngestResult(source, domain, finalLabels, 0, Rejected: true,
+                return new IngestResult(source, domain, finalLabels, 0, IngestOutcome.Rejected,
                     Reason: $"No corresponde a ningún dominio con confianza suficiente " +
                             $"({confidence:0.00} < {_options.ClassificationThreshold:0.00}).",
                     Confidence: confidence);
@@ -241,7 +241,7 @@ public sealed class RagClient
         else if (domain is not null &&
                  !domains.Any(x => string.Equals(x.Name, domain, StringComparison.OrdinalIgnoreCase)))
         {
-            return new IngestResult(source, domain, finalLabels, 0, Rejected: true,
+            return new IngestResult(source, domain, finalLabels, 0, IngestOutcome.Rejected,
                 Reason: $"El dominio '{domain}' no está definido.");
         }
 
@@ -251,10 +251,12 @@ public sealed class RagClient
             return new IngestResult(source, domain, labelArr, 0, Confidence: confidence);
 
         // Batch the embeddings (one round-trip / parallel inference) and the writes.
+        // Every chunk in this call shares one timestamp — it's one ingestion event.
+        var now = DateTime.UtcNow;
         var vectors = await _embedder.EmbedBatchAsync(chunks, ct).ConfigureAwait(false);
         var batch = new List<EmbeddedChunk>(chunks.Count);
         for (int i = 0; i < chunks.Count; i++)
-            batch.Add(new EmbeddedChunk(source, chunks[i], domain, labelArr, vectors[i]));
+            batch.Add(new EmbeddedChunk(source, chunks[i], domain, labelArr, vectors[i], now));
         await _store.AddChunksAsync(batch, ct).ConfigureAwait(false);
 
         // Keep the lexical index in sync only once it's been loaded; otherwise the
@@ -270,6 +272,108 @@ public sealed class RagClient
     public Task<IngestResult> IngestFileAsync(string path, string? domain = null,
         IEnumerable<string>? labels = null, CancellationToken ct = default)
         => IngestAsync(FileExtractors.Extract(path), Path.GetFileName(path), domain, labels, ct);
+
+    private const string IngestManifestKind = "ingest-manifest";
+
+    /// <summary>
+    /// Ingest text, but skip the work entirely if it's identical to what's already
+    /// stored under <paramref name="source"/>: a SHA-256 hash of <paramref name="text"/>
+    /// is compared against a manifest persisted via the store's generic catalog (see
+    /// <see cref="SaveCatalogEntryAsync"/>) — no domain/label classification, no
+    /// embedding, no write. When the content differs (or nothing was ingested before),
+    /// any previous chunks under <paramref name="source"/> are deleted (<see
+    /// cref="RemoveDocumentAsync"/>) and it's ingested fresh via <see cref="IngestAsync"/>.
+    /// </summary>
+    public async Task<IngestResult> IngestIfChangedAsync(
+        string text, string source, string? domain = null, IEnumerable<string>? labels = null, CancellationToken ct = default)
+    {
+        var hash = ContentHash.Compute(text);
+        var previousHash = await _store.GetCatalogEntryAsync(IngestManifestKind, source, ct).ConfigureAwait(false);
+        if (previousHash == hash)
+            return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
+                Reason: "El contenido no ha cambiado desde la última ingesta.");
+
+        if (previousHash is not null)
+            await RemoveDocumentAsync(source, domain: null, ct).ConfigureAwait(false);
+
+        var result = await IngestAsync(text, source, domain, labels, ct).ConfigureAwait(false);
+        if (result.Outcome == IngestOutcome.Ingested)
+            await _store.SaveCatalogEntryAsync(IngestManifestKind, source, hash, ct).ConfigureAwait(false);
+        return result;
+    }
+
+    /// <summary>Idempotent counterpart of <see cref="IngestFileAsync"/> — see
+    /// <see cref="IngestIfChangedAsync"/>.</summary>
+    public Task<IngestResult> IngestFileIfChangedAsync(string path, string? domain = null,
+        IEnumerable<string>? labels = null, CancellationToken ct = default)
+        => IngestIfChangedAsync(FileExtractors.Extract(path), Path.GetFileName(path), domain, labels, ct);
+
+    /// <summary>
+    /// Ingest every supported file under <paramref name="path"/> (see <see
+    /// cref="FileExtractors.IsSupported"/> — registered extractors plus common plain-text
+    /// formats; anything else is skipped), yielding one <see cref="IngestResult"/> per file
+    /// as it completes so a caller can report progress incrementally instead of waiting for
+    /// the whole folder. Files that fail extraction surface as a rejected result rather than
+    /// aborting the rest of the folder.
+    /// </summary>
+    public async IAsyncEnumerable<IngestResult> IngestFolderAsync(
+        string path, string? domain = null, bool recursive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+        foreach (var file in Directory.EnumerateFiles(path, "*", option))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!FileExtractors.IsSupported(file)) continue;
+
+            IngestResult result;
+            try
+            {
+                result = await IngestFileAsync(file, domain, null, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                result = new IngestResult(Path.GetFileName(file), domain, Array.Empty<string>(), 0,
+                    IngestOutcome.Rejected, Reason: $"Error al extraer el contenido: {ex.Message}");
+            }
+            yield return result;
+        }
+    }
+
+    /// <summary>
+    /// Remove every chunk ingested under <paramref name="source"/> (optionally scoped to
+    /// a <paramref name="domain"/> — omit to remove across all domains). Returns how many
+    /// chunks were removed. Also drops those entries from the in-memory hybrid (lexical)
+    /// index, if it's been loaded, so stale hits don't keep surfacing.
+    /// </summary>
+    public async Task<int> RemoveDocumentAsync(string source, string? domain = null, CancellationToken ct = default)
+    {
+        var removed = await _store.DeleteBySourceAsync(source, domain, ct).ConfigureAwait(false);
+        if (removed > 0 && _options.Hybrid && Volatile.Read(ref _lexicalLoaded))
+            _lexical.RemoveBySource(source);
+        return removed;
+    }
+
+    /// <summary>List ingested documents (one entry per distinct source), optionally
+    /// scoped to a domain — the aggregate view over the individual chunks.</summary>
+    public Task<IReadOnlyList<DocumentInfo>> ListDocumentsAsync(string? domain = null, CancellationToken ct = default)
+        => _store.ListDocumentsAsync(domain, ct);
+
+    // --- generic catalog: consumer-owned key/value metadata, persisted alongside the vectors ---
+
+    /// <summary>Read a catalog entry previously saved with <see cref="SaveCatalogEntryAsync"/>, or
+    /// null if absent (or the store doesn't support the catalog — see <see cref="IVectorStore"/>).</summary>
+    public Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+        => _store.GetCatalogEntryAsync(kind, key, ct);
+
+    /// <summary>Write (create or replace) a catalog entry: an arbitrary JSON blob keyed by
+    /// (<paramref name="kind"/>, <paramref name="key"/>) — RagKit never interprets either.</summary>
+    public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
+        => _store.SaveCatalogEntryAsync(kind, key, json, ct);
+
+    /// <summary>Delete a catalog entry, if present.</summary>
+    public Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+        => _store.DeleteCatalogEntryAsync(kind, key, ct);
 
     // --- ask -----------------------------------------------------------------
 
@@ -342,6 +446,79 @@ public sealed class RagClient
         }
 
         return new RagStream(ToCitations(hits), _answer.StreamAsync(messages, ct));
+    }
+
+    /// <summary>
+    /// Multi-turn RAG as a pure function: <paramref name="priorHistory"/> is the
+    /// conversation so far (as the caller persisted it — no session object, no shared
+    /// mutable state, safe to call concurrently for different conversations). Routes,
+    /// input-guards, retrieves and answers exactly like <see cref="AskAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>,
+    /// but grounds the answer on <paramref name="priorHistory"/> plus this turn instead
+    /// of starting fresh. The returned history for the *next* turn is
+    /// <paramref name="priorHistory"/> + this question + this answer — the caller
+    /// appends and persists it; RagKit keeps none of it.
+    /// </summary>
+    public async Task<RagAnswer> AskAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory,
+        string? domain = null, string? profile = null, CancellationToken ct = default)
+    {
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagAnswer(_options.GuardrailRejectionMessage, Array.Empty<Citation>());
+
+        var hits = await RetrieveAsync(question, route.Domain, route.Labels, ct).ConfigureAwait(false);
+        var convo = BuildConversation(route.Domain, primary, priorHistory, question, hits);
+        var answer = await _answer.CompleteAsync(convo, ct).ConfigureAwait(false);
+
+        var outGuard = await GuardOutputAsync(answer, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!outGuard.Allowed)
+            return new RagAnswer(_options.GuardrailRejectionMessage, ToCitations(hits));
+
+        return new RagAnswer(answer, ToCitations(hits));
+    }
+
+    /// <summary>Streamed counterpart of <see cref="AskAsync(string,IReadOnlyList{ChatMessage},string?,string?,CancellationToken)"/> —
+    /// same explicit-history contract, buffer-then-emit under an output guardrail exactly
+    /// like <see cref="AskStreamAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>.</summary>
+    public async Task<RagStream> AskStreamAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory,
+        string? domain = null, string? profile = null, CancellationToken ct = default)
+    {
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new RagStream(Array.Empty<Citation>(), One(_options.GuardrailRejectionMessage));
+
+        var hits = await RetrieveAsync(question, route.Domain, route.Labels, ct).ConfigureAwait(false);
+        var convo = BuildConversation(route.Domain, primary, priorHistory, question, hits);
+
+        if (HasOutputGuardrail(route.Domain, primary))
+        {
+            var full = await _answer.CompleteAsync(convo, ct).ConfigureAwait(false);
+            var og = await GuardOutputAsync(full, route.Domain, primary, ct).ConfigureAwait(false);
+            return og.Allowed
+                ? new RagStream(ToCitations(hits), One(full))
+                : new RagStream(ToCitations(hits), One(_options.GuardrailRejectionMessage));
+        }
+
+        return new RagStream(ToCitations(hits), _answer.StreamAsync(convo, ct));
+    }
+
+    /// <summary>Assemble system prompt + prior turns + this grounded question, for the
+    /// explicit-history <c>AskAsync</c>/<c>AskStreamAsync</c> overloads.</summary>
+    private List<ChatMessage> BuildConversation(
+        string? domain, string? profile, IReadOnlyList<ChatMessage> priorHistory, string question, IReadOnlyList<StoredHit> hits)
+    {
+        var systemPrompt = SelectPrompt(domain, profile, _options.ChatPrompt ?? _options.OneShotPrompt ?? Prompt.DefaultSystem);
+        var convo = new List<ChatMessage>(priorHistory.Count + 2) { new("system", systemPrompt) };
+        convo.AddRange(priorHistory);
+        convo.Add(new ChatMessage("user", Prompt.BuildUser(question, hits)));
+        return convo;
     }
 
     /// <summary>

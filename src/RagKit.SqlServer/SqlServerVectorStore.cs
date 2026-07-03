@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
@@ -40,6 +40,7 @@ public sealed class SqlServerVectorStore : IVectorStore
     private string Domains => $"{_c}_domains";
     private string Labels => $"{_c}_labels";
     private string Settings => $"{_c}_settings";
+    private string Catalog => $"{_c}_catalog";
 
     public async Task InitializeAsync(string modelId, int dimension, CancellationToken ct = default)
     {
@@ -51,9 +52,11 @@ public sealed class SqlServerVectorStore : IVectorStore
             IF OBJECT_ID('{Domains}') IS NULL CREATE TABLE {Domains}(name nvarchar(200) PRIMARY KEY, description nvarchar(max));
             IF OBJECT_ID('{Labels}') IS NULL CREATE TABLE {Labels}(name nvarchar(200) PRIMARY KEY, description nvarchar(max));
             IF OBJECT_ID('{Settings}') IS NULL CREATE TABLE {Settings}(name nvarchar(100) PRIMARY KEY, value nvarchar(max));
+            IF OBJECT_ID('{Catalog}') IS NULL CREATE TABLE {Catalog}(kind nvarchar(100), key_name nvarchar(400), value nvarchar(max), PRIMARY KEY(kind, key_name));
             IF OBJECT_ID('{Chunks}') IS NULL CREATE TABLE {Chunks}(
                 id uniqueidentifier PRIMARY KEY, source nvarchar(400), body nvarchar(max),
-                domain nvarchar(200) NULL, labels nvarchar(max) NULL, embedding vector({dimension}));
+                domain nvarchar(200) NULL, labels nvarchar(max) NULL, embedding vector({dimension}),
+                ingested_at_utc datetime2 NULL);
             """, ct).ConfigureAwait(false);
 
         await using (var read = new SqlCommand($"SELECT model_id, dimension FROM {Meta} WHERE id=1", con))
@@ -148,17 +151,19 @@ public sealed class SqlServerVectorStore : IVectorStore
     private static IReadOnlyList<T> Deserialize<T>(string? json)
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
-    public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
+    public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
+        DateTime ingestedAtUtc = default, CancellationToken ct = default)
     {
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new SqlCommand(
-            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding) VALUES(@id,@s,@b,@dom,@lbl,CAST(@emb AS vector({_dim})))", con);
+            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES(@id,@s,@b,@dom,@lbl,CAST(@emb AS vector({_dim})),@ing)", con);
         cmd.Parameters.AddWithValue("@id", Guid.NewGuid());
         cmd.Parameters.AddWithValue("@s", source);
         cmd.Parameters.AddWithValue("@b", text);
         cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@lbl", JsonSerializer.Serialize(labels));
         cmd.Parameters.AddWithValue("@emb", Literal(vector));
+        cmd.Parameters.AddWithValue("@ing", ingestedAtUtc == default ? (object)DBNull.Value : ingestedAtUtc);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -203,15 +208,51 @@ public sealed class SqlServerVectorStore : IVectorStore
     {
         var list = new List<StoredChunk>();
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels FROM {Chunks}", con);
+        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels, ingested_at_utc FROM {Chunks}", con);
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>()
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels));
+            var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt));
         }
         return list;
+    }
+
+    public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand(
+            $"DELETE FROM {Chunks} WHERE source=@s AND (@dom IS NULL OR domain=@dom)", con);
+        cmd.Parameters.AddWithValue("@s", source);
+        cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand($"SELECT value FROM {Catalog} WHERE kind=@k AND key_name=@n", con);
+        cmd.Parameters.AddWithValue("@k", kind);
+        cmd.Parameters.AddWithValue("@n", key);
+        return await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+    }
+
+    public async Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await Exec(con, $"""
+            MERGE {Catalog} AS t USING (SELECT @k AS kind, @n AS key_name) AS s ON t.kind=s.kind AND t.key_name=s.key_name
+            WHEN MATCHED THEN UPDATE SET value=@v
+            WHEN NOT MATCHED THEN INSERT(kind,key_name,value) VALUES(@k,@n,@v);
+            """, ct, ("@k", kind), ("@n", key), ("@v", json)).ConfigureAwait(false);
+    }
+
+    public async Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await Exec(con, $"DELETE FROM {Catalog} WHERE kind=@k AND key_name=@n", ct, ("@k", kind), ("@n", key)).ConfigureAwait(false);
     }
 
     // --- helpers -------------------------------------------------------------

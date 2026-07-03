@@ -76,6 +76,14 @@ var g = await rag.AskAgentAsync("…", domain: "fiscal");    // 3) Agéntico: el
 var s = await rag.AskStreamAsync("…", domain: "fiscal");
 await foreach (var token in s.Tokens) Console.Write(token);   // s.Citations ya disponible
 // chat.AskStreamAsync(...) hace lo mismo en una sesión con memoria.
+
+// 5) Multi-turno sin estado interno oculto: el historial es un parámetro explícito
+//    (función pura, sin objeto de sesión que sobreviva en memoria del proceso — lo
+//    reconstruyes tú desde tu propio almacén en cada turno).
+IReadOnlyList<ChatMessage> historial = Array.Empty<ChatMessage>();
+var t1 = await rag.AskAsync("¿qué sección de cable para 25 A?", historial, domain: "construccion");
+historial = new[] { new ChatMessage("user", "¿qué sección de cable para 25 A?"), new ChatMessage("assistant", t1.Answer) };
+var t2 = await rag.AskAsync("¿y para 40 A?", historial, domain: "construccion");   // sigue el hilo
 ```
 El modo **agéntico** expone **herramientas internas** sobre la base
 (`search_knowledge_base`, `list_domains`, `list_labels`, `create_domain`,
@@ -208,6 +216,40 @@ await rag.RemoveProfileAsync("fontanero", "construccion");
 var perfiles = await rag.ListProfilesAsync();
 ```
 
+## Gestión de documentos
+Más allá de ingestar, RagKit sabe **borrar, listar, reingestar sin duplicar y
+recorrer una carpeta**, con el mismo contrato en los 4 backends:
+
+```csharp
+// Borrado por source (opcionalmente acotado a un dominio; sin él, borra en todos).
+int borrados = await rag.RemoveDocumentAsync("iva.txt", domain: "fiscal");
+
+// Inventario: un DocumentInfo por source, agregando los chunks internos.
+var docs = await rag.ListDocumentsAsync(domain: "fiscal");
+foreach (var d in docs) Console.WriteLine($"{d.Source}: {d.ChunkCount} chunks, {d.IngestedAtUtc:u}");
+
+// Ingesta idempotente: si el contenido no cambió desde la última vez, no hace nada
+// (ni clasifica ni embebe); si cambió, sustituye los chunks anteriores del mismo source.
+var r = await rag.IngestFileIfChangedAsync("iva.txt", domain: "fiscal");
+// r.Outcome: Ingested (nuevo o cambiado) | Unchanged (no-op barato) | Rejected
+
+// Carpeta completa: un IngestResult por fichero según se completa (progreso incremental).
+await foreach (var res in rag.IngestFolderAsync("./docs", domain: "fiscal", recursive: true))
+    Console.WriteLine($"{res.Source}: {res.Outcome}");
+```
+
+**Catálogo genérico**: además de perfiles/guardarails (tipados), el store expone un
+almacén *key-value* libre para que la aplicación guarde sus propios metadatos (el
+manifiesto de `IngestIfChangedAsync` vive aquí) sin forkear el backend:
+```csharp
+await rag.SaveCatalogEntryAsync("app-config", "feature-flags", "{\"betaUi\":true}");
+var json = await rag.GetCatalogEntryAsync("app-config", "feature-flags");
+await rag.DeleteCatalogEntryAsync("app-config", "feature-flags");
+```
+`kind`/`key` son de libre elección del consumidor; RagKit no los interpreta. Un store
+que no implemente el catálogo (p. ej. uno propio de terceros) simplemente no persiste
+nada (no-op), sin romper el contrato.
+
 ## Estado y roadmap
 **Hecho y testeado:**
 - ✅ Fachada `RagClient` (`CreateAsync`), dos tiers, dominios/etiquetas, prompts (one-shot/chat) configurables en Markdown.
@@ -215,6 +257,8 @@ var perfiles = await rag.ListProfilesAsync();
 - ✅ Auto-clasificación con **confianza + umbral + rechazo**.
 - ✅ **Enrutado en query-time + perfiles (lentes) + guardarails** (entrada siempre activo; salida también en streaming vía buffer), aplicados también en el **modo agéntico**; **CRUD + persistencia** de perfiles/guardarails en los 4 backends.
 - ✅ Cliente chat compatible OpenAI (solo `HttpClient`); recuperación acotada por dominio/etiquetas; troceado por frontera.
+- ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), inventario agregado (`ListDocumentsAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
+- ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -250,5 +294,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 34 tests, sin red (net8.0 y net10.0)
+dotnet test   # 54 tests, sin red (net8.0 y net10.0)
 ```

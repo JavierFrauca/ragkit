@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace RagKit;
 
@@ -58,11 +58,26 @@ public sealed record RagAnswer(string Answer, IReadOnlyList<Citation> Citations)
 /// </summary>
 public sealed record RagStream(IReadOnlyList<Citation> Citations, IAsyncEnumerable<string> Tokens);
 
+/// <summary>The three things ingestion can end in: new content was written
+/// (<see cref="Ingested"/>), it was refused before writing anything
+/// (<see cref="Rejected"/> — no domain defined, low classification confidence, or an
+/// invalid explicit domain), or the content hash matched what's already stored so
+/// nothing was re-written (<see cref="Unchanged"/>, see <c>IngestIfChangedAsync</c>).</summary>
+public enum IngestOutcome { Ingested, Rejected, Unchanged }
+
 /// <summary>What ingestion did: where the document landed and how it was split,
-/// or why it was rejected (no domains defined, or low classification confidence).</summary>
+/// or why it didn't write new content (rejected, or unchanged since last ingest).</summary>
 public sealed record IngestResult(
     string Source, string? Domain, IReadOnlyList<string> Labels, int ChunkCount,
-    bool Rejected = false, string? Reason = null, double Confidence = 1.0);
+    IngestOutcome Outcome = IngestOutcome.Ingested, string? Reason = null, double Confidence = 1.0)
+{
+    /// <summary>True when <see cref="Outcome"/> is <see cref="IngestOutcome.Rejected"/>.</summary>
+    public bool Rejected => Outcome == IngestOutcome.Rejected;
+}
+
+/// <summary>A document as seen from the outside: one or more chunks sharing a
+/// <see cref="Source"/>, aggregated for inventory purposes.</summary>
+public sealed record DocumentInfo(string Source, string? Domain, int ChunkCount, DateTime IngestedAtUtc);
 
 /// <summary>One chat message (role = "system" | "user" | "assistant").</summary>
 public readonly record struct ChatMessage(string Role, string Content);

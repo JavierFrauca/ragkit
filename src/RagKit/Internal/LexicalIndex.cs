@@ -30,6 +30,27 @@ internal sealed class LexicalIndex
         }
     }
 
+    /// <summary>Remove every entry indexed under <paramref name="source"/> (used after
+    /// <c>IVectorStore.DeleteBySourceAsync</c> so hybrid search doesn't keep serving stale hits).</summary>
+    public void RemoveBySource(string source)
+    {
+        lock (_lock)
+        {
+            for (int i = _entries.Count - 1; i >= 0; i--)
+            {
+                var e = _entries[i];
+                if (!string.Equals(e.Chunk.Source, source, StringComparison.Ordinal)) continue;
+                foreach (var t in e.Tf.Keys)
+                {
+                    if (!_df.TryGetValue(t, out var df)) continue;
+                    if (df <= 1) _df.Remove(t); else _df[t] = df - 1;
+                }
+                _totalLen -= e.Len;
+                _entries.RemoveAt(i);
+            }
+        }
+    }
+
     public List<(StoredChunk Chunk, double Score)> Search(string query, int k, string? domain, IReadOnlyList<string>? labels)
     {
         var qterms = Tokenize(query).Distinct().ToList();
