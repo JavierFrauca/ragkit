@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -107,9 +107,10 @@ public sealed class QdrantVectorStore : IVectorStore
     private static IReadOnlyList<T> Deserialize<T>(string? json)
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
-    public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector, CancellationToken ct = default)
+    public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
+        DateTime ingestedAtUtc = default, CancellationToken ct = default)
         => UpsertAsync(_chunks, Guid.NewGuid().ToString(), vector,
-            new { source, text, domain, labels = labels.ToArray() }, ct);
+            new { source, text, domain, labels = labels.ToArray(), ingestedAtUtc = ingestedAtUtc.ToString("o") }, ct);
 
     public async Task<IReadOnlyList<StoredHit>> SearchAsync(float[] query, int k, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
     {
@@ -161,9 +162,55 @@ public sealed class QdrantVectorStore : IVectorStore
                 : new List<string>();
             outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
                 pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labels));
+                labels, ParseIngestedAt(pay)));
         }
         return outList;
+    }
+
+    private static DateTime ParseIngestedAt(JsonElement pay)
+        => pay.TryGetProperty("ingestedAtUtc", out var t) && t.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(t.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+            ? dt : default;
+
+    // Generic consumer catalog: distinct "catalog:" id prefix so a caller-chosen
+    // kind/key (e.g. kind="domain") can never collide with the internal domain/label/
+    // settings points, which are namespaced under "domain:"/"label:"/"settings:".
+    public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        var pay = await GetPointPayloadAsync(_catalog, Uuid($"catalog:{kind}:{key}"), ct).ConfigureAwait(false);
+        return pay is null ? null : Str(pay.Value, "json");
+    }
+
+    public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
+        => UpsertAsync(_catalog, Uuid($"catalog:{kind}:{key}"), new float[] { 0f },
+            new { kind = "catalog", entryKind = kind, key, json }, ct);
+
+    public async Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
+    {
+        using var resp = await _http.PostAsJsonAsync($"collections/{_catalog}/points/delete?wait=true",
+            new { points = new[] { Uuid($"catalog:{kind}:{key}") } }, ct).ConfigureAwait(false);
+        await ReadAsync(resp, ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
+    {
+        var must = new List<object> { new { key = "source", match = new { value = source } } };
+        if (domain != null) must.Add(new { key = "domain", match = new { value = domain } });
+        var filter = new { must };
+
+        int count;
+        using (var countResp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/count",
+            new { filter, exact = true }, ct).ConfigureAwait(false))
+        {
+            var countJson = await ReadAsync(countResp, ct).ConfigureAwait(false);
+            count = countJson.RootElement.GetProperty("result").GetProperty("count").GetInt32();
+            if (count == 0) return 0;
+        }
+
+        using var delResp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/delete?wait=true",
+            new { filter }, ct).ConfigureAwait(false);
+        await ReadAsync(delResp, ct).ConfigureAwait(false);
+        return count;
     }
 
     // --- REST helpers --------------------------------------------------------
