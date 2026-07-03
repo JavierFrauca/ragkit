@@ -288,17 +288,18 @@ public sealed class RagClient
         string text, string source, string? domain = null, IEnumerable<string>? labels = null, CancellationToken ct = default)
     {
         var hash = ContentHash.Compute(text);
-        var previousHash = await _store.GetCatalogEntryAsync(IngestManifestKind, source, ct).ConfigureAwait(false);
+        var manifestKey = domain is null ? source : $"{domain}:{source}";
+        var previousHash = await _store.GetCatalogEntryAsync(IngestManifestKind, manifestKey, ct).ConfigureAwait(false);
         if (previousHash == hash)
             return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
                 Reason: "El contenido no ha cambiado desde la última ingesta.");
 
         if (previousHash is not null)
-            await RemoveDocumentAsync(source, domain: null, ct).ConfigureAwait(false);
+            await RemoveDocumentAsync(source, domain, ct).ConfigureAwait(false);
 
         var result = await IngestAsync(text, source, domain, labels, ct).ConfigureAwait(false);
         if (result.Outcome == IngestOutcome.Ingested)
-            await _store.SaveCatalogEntryAsync(IngestManifestKind, source, hash, ct).ConfigureAwait(false);
+            await _store.SaveCatalogEntryAsync(IngestManifestKind, manifestKey, hash, ct).ConfigureAwait(false);
         return result;
     }
 
