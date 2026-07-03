@@ -294,5 +294,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 54 tests, sin red (net8.0 y net10.0)
+dotnet test   # 55 tests, sin red (net8.0 y net10.0)
 ```

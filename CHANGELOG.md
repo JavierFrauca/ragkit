@@ -4,6 +4,18 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.2.1] - 2026-07-03
+
+### Corregido
+- **Bug**: el manifiesto de idempotencia de `IngestIfChangedAsync` (y por herencia
+  `IngestFileIfChangedAsync`/`IngestFolderAsync`) se guardaba con clave = solo
+  `source`, sin `domain`. En una base con varios dominios compartiendo colección,
+  ingestar el mismo nombre de fichero en un segundo dominio borraba silenciosamente
+  los chunks del primero (`RemoveDocumentAsync` se llamaba con `domain: null`).
+  Ahora la clave del manifiesto es `{domain}:{source}` cuando se pasa un dominio
+  explícito, y el borrado por cambio de contenido se acota a ese mismo dominio.
+  ([#10](https://github.com/JavierFrauca/ragkit/issues/10))
+
 ## [0.2.0] - 2026-07-03
 
 Gestión de documentos (borrado, inventario, idempotencia, ingesta de carpeta,

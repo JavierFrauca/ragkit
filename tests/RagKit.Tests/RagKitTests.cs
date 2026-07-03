@@ -921,6 +921,35 @@ public class RagKitTests
         Assert.Contains("actualizada", ans.Citations[0].Snippet);
     }
 
+    [Fact]
+    public async Task IngestIfChangedAsync_isolates_the_manifest_by_domain_same_source_name()
+    {
+        // Regression for FR-08: the manifest used to be keyed by `source` alone, so
+        // ingesting the same filename into a second domain silently wiped out the
+        // first domain's chunks (RemoveDocumentAsync was called with domain: null).
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("payroll");
+        await rag.DefineDomainAsync("fincas");
+
+        await rag.IngestIfChangedAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
+        await rag.IngestIfChangedAsync("contenido de fincas, distinto del anterior", "contrato.txt", domain: "fincas");
+
+        var payrollDocs = await rag.ListDocumentsAsync("payroll");
+        Assert.Single(payrollDocs); // must survive the "fincas" ingest of the same filename
+        Assert.Equal("contrato.txt", payrollDocs[0].Source);
+
+        var fincasDocs = await rag.ListDocumentsAsync("fincas");
+        Assert.Single(fincasDocs);
+        Assert.Equal(2, await rag.ChunkCountAsync()); // both domains' chunks present, none cross-deleted
+
+        // Re-ingesting the same content in each domain independently is still a no-op.
+        var unchangedPayroll = await rag.IngestIfChangedAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
+        Assert.Equal(IngestOutcome.Unchanged, unchangedPayroll.Outcome);
+        var unchangedFincas = await rag.IngestIfChangedAsync("contenido de fincas, distinto del anterior", "contrato.txt", domain: "fincas");
+        Assert.Equal(IngestOutcome.Unchanged, unchangedFincas.Outcome);
+        Assert.Equal(2, await rag.ChunkCountAsync());
+    }
+
     // --- FR-04: folder ingestion ----------------------------------------------
 
     [Fact]
