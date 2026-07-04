@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RagKit — Panel de mantenimiento</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { display: flex; align-items: center; gap: .5rem; }
+  .logo { color: #6b4fbb; }
+  .stats { border: 1px solid #8883; border-radius: .5rem; padding: 1rem; margin-top: 1.5rem; }
+  code { background: #8882; padding: .1rem .3rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+  <h1><span class="logo">◆</span> RagKit — Panel de mantenimiento</h1>
+  <p>Esqueleto del dashboard (Milestone 1). Todavía sin CRUD — solo confirma que
+     el montaje y la resolución de <code>RagClient</code> por DI funcionan.</p>
+  <div class="stats">
+    <div>Chunks indexados: <span id="chunk-count">…</span></div>
+  </div>
+  <script>
+    fetch("api/stats")
+      .then(r => r.json())
+      .then(d => { document.getElementById("chunk-count").textContent = d.chunkCount; })
+      .catch(() => { document.getElementById("chunk-count").textContent = "error"; });
+  </script>
+</body>
+</html>

@@ -45,8 +45,10 @@ dotnet add package RagKit.Onnx            # embeddings ONNX locales
 dotnet add package RagKit.Postgres        # Postgres + pgvector
 dotnet add package RagKit.SqlServer       # SQL Server 2025 (VECTOR)
 dotnet add package RagKit.Mcp            # herramientas MCP externas
+dotnet add package RagKit.Dashboard      # panel de mantenimiento opt-in (net10.0)
 ```
-Compatible con **.NET 8** y **.NET 10** (`net8.0` / `net10.0`).
+Compatible con **.NET 8** y **.NET 10** (`net8.0` / `net10.0`) — salvo
+`RagKit.Dashboard`, acoplado a ASP.NET Core, que solo target `net10.0`.
 
 ## Lo que configuras
 | Opción | Para qué |
@@ -275,6 +277,22 @@ await rag.DeleteCatalogEntryAsync("app-config", "feature-flags");
 que no implemente el catálogo (p. ej. uno propio de terceros) simplemente no persiste
 nada (no-op), sin romper el contrato.
 
+## Panel de mantenimiento (`RagKit.Dashboard`, en desarrollo)
+Paquete opt-in con un panel mínimo de administración (al estilo del dashboard de
+Qdrant o el de Hangfire) sobre la API pública de `RagClient`. Se monta con una línea:
+```csharp
+builder.Services.AddSingleton(rag); // tu RagClient ya creado
+// ...
+app.MapRagDashboard(path: "/rag-admin").RequireAuthorization("AdminOnly");
+```
+**Sin autenticación propia por defecto** — `MapRagDashboard` devuelve un
+`IEndpointConventionBuilder` para que cuelgues tu propio esquema de auth de ASP.NET
+Core; no lo expongas público sin ello. Solo target `net10.0` (acoplado a ASP.NET
+Core). Por ahora trae el montaje + un endpoint de estado; el CRUD completo
+(dominios/documentos/chunks/guardarails/perfiles/prompts), la ingesta con progreso y
+el playground de preguntas llegan en próximas versiones — ver
+[`src/RagKit.Dashboard/README.md`](src/RagKit.Dashboard/README.md).
+
 ## Estado y roadmap
 **Hecho y testeado:**
 - ✅ Fachada `RagClient` (`CreateAsync`), dos tiers, dominios/etiquetas, prompts (one-shot/chat) configurables en Markdown.
@@ -284,6 +302,11 @@ nada (no-op), sin romper el contrato.
 - ✅ Cliente chat compatible OpenAI (solo `HttpClient`); recuperación acotada por dominio/etiquetas; troceado por frontera.
 - ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), borrado de dominio completo (`RemoveDomainAsync`), inventario agregado (`ListDocumentsAsync`), listado paginado de chunks por documento con id (`ListChunksAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
+- ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
+
+**En desarrollo:** `RagKit.Dashboard` — panel de mantenimiento opt-in (esqueleto
++ montaje + auth hook ya disponibles; CRUD completo, ingesta con progreso y
+playground de preguntas en próximos milestones).
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -319,5 +342,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 66 tests, sin red (net8.0 y net10.0)
+dotnet test   # 66 tests del core (net8.0 y net10.0) + 5 de RagKit.Dashboard (net10.0), sin red
 ```

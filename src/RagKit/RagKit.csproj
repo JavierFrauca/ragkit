@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RagKit.Tests" />
+    <InternalsVisibleTo Include="RagKit.Dashboard.Tests" />
   </ItemGroup>
 
   <ItemGroup>

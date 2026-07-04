@@ -4,6 +4,22 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.5.0] - 2026-07-04
+
+### Añadido
+- **`RagKit.Dashboard` (nuevo paquete, esqueleto)**: panel de mantenimiento
+  opt-in — Minimal API + assets embebidos como recursos del ensamblado (sin
+  build step de frontend), al estilo Qdrant/Hangfire. Este primer milestone
+  trae el montaje (`app.MapRagDashboard(path: "/rag-admin")`, devolviendo un
+  `IEndpointConventionBuilder` encadenable con `.RequireAuthorization()`) y
+  un endpoint `GET api/stats` de humo. El CRUD real (dominios, documentos,
+  chunks, guardarails, perfiles, prompts), la ingesta con progreso y el
+  playground de preguntas llegan en milestones siguientes.
+  Solo target `net10.0` (acoplado a ASP.NET Core, sin el compromiso de
+  compatibilidad tan amplio del core). **Sin autenticación propia** — ver
+  advertencia de seguridad en `src/RagKit.Dashboard/README.md`.
+  ([#22](https://github.com/JavierFrauca/ragkit/issues/22))
+
 ## [0.4.0] - 2026-07-04
 
 Primer paso hacia `RagKit.Dashboard` (panel de mantenimiento opt-in, en
