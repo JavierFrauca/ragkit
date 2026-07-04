@@ -574,16 +574,43 @@ public sealed class RagClient
     /// Agentic answer: the model decides when to search the knowledge base, list
     /// or create domains/labels, ingest, or call external (MCP) tools — looping
     /// until it answers. Requires a tool-capable model; otherwise it transparently
-    /// falls back to one-shot <see cref="AskAsync"/>.
+    /// falls back to one-shot <see cref="AskAsync"/>. <paramref name="tools"/> defaults
+    /// to <see cref="AgentToolScope.All"/> (the pre-scoping behavior); pass
+    /// <see cref="AgentToolScope.SearchOnly"/> for public/unauthenticated callers — see
+    /// <see cref="AgentToolScope"/>.
     /// </summary>
-    public async Task<RagAnswer> AskAgentAsync(string question, string? domain = null, int maxSteps = 5, CancellationToken ct = default)
+    public Task<RagAnswer> AskAgentAsync(
+        string question, string? domain = null, int maxSteps = 5,
+        AgentToolScope tools = AgentToolScope.All, CancellationToken ct = default)
+        => AskAgentCoreAsync(question, Array.Empty<ChatMessage>(), domain, null, maxSteps, tools, ct);
+
+    /// <summary>
+    /// Agentic answer as a pure function over explicit history, mirroring
+    /// <see cref="AskAsync(string,IReadOnlyList{ChatMessage},string?,string?,CancellationToken)"/>:
+    /// <paramref name="priorHistory"/> is the conversation so far (caller-persisted, no
+    /// hidden session state) and <paramref name="profile"/> pins the lens the same way the
+    /// non-agentic overload does, instead of re-routing from a blank profile every turn.
+    /// Same tool loop, scoping and guardrails as
+    /// <see cref="AskAgentAsync(string,string?,int,AgentToolScope,CancellationToken)"/>.
+    /// </summary>
+    public Task<RagAnswer> AskAgentAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory,
+        string? domain = null, string? profile = null, int maxSteps = 5,
+        AgentToolScope tools = AgentToolScope.All, CancellationToken ct = default)
+        => AskAgentCoreAsync(question, priorHistory, domain, profile, maxSteps, tools, ct);
+
+    private async Task<RagAnswer> AskAgentCoreAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory, string? domain, string? profile,
+        int maxSteps, AgentToolScope toolScope, CancellationToken ct)
     {
         if (!_answer.SupportsTools)
-            return await AskAsync(question, domain, null, null, ct).ConfigureAwait(false);
+            return priorHistory.Count > 0
+                ? await AskAsync(question, priorHistory, domain, profile, ct).ConfigureAwait(false)
+                : await AskAsync(question, domain, null, profile, ct).ConfigureAwait(false);
 
         // Same front door as AskAsync: route (when not pinned) and guardrail the query
         // BEFORE any tool runs, so the agentic path can't bypass the guardrail.
-        var route = await ResolveRouteAsync(question, domain, null, ct).ConfigureAwait(false);
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
         var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
 
         var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
@@ -591,21 +618,16 @@ public sealed class RagClient
             return new RagAnswer(_options.GuardrailRejectionMessage, Array.Empty<Citation>());
 
         var search = new SearchTool(this, route.Domain);
-        var tools = new List<IRagTool>
-        {
-            search, new ListDomainsTool(this), new ListLabelsTool(this),
-            new CreateDomainTool(this), new CreateLabelTool(this), new IngestTool(this, route.Domain),
-            new CreateProfileTool(this), new CreateGuardrailTool(this),
-        };
-        tools.AddRange(_externalTools);
+        var tools = BuildAgentTools(search, route.Domain, toolScope);
         var specs = tools.Select(t => new ToolSpec(t.Name, t.Description, t.ParametersSchema)).ToList();
         var byName = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
 
         var msgs = new List<AgentMessage>
         {
             new("system", SelectPrompt(route.Domain, primary, _options.OneShotPrompt ?? Prompt.AgentSystem)),
-            new("user", question),
         };
+        foreach (var h in priorHistory) msgs.Add(new AgentMessage(h.Role, h.Content));
+        msgs.Add(new AgentMessage("user", question));
 
         for (int step = 0; step < maxSteps; step++)
         {
@@ -633,6 +655,30 @@ public sealed class RagClient
             msgs.Where(m => m.Role is "system" or "user" or "assistant")
                 .Select(m => new ChatMessage(m.Role, m.Content ?? "")).ToList(), ct).ConfigureAwait(false);
         return await GuardedAgentAnswer(final, route.Domain, primary, search, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Build the tool list for one agent-loop call, scoped by <paramref name="scope"/>.
+    /// <c>search</c> is always included — <see cref="AgentToolScope.SearchOnly"/> can't be
+    /// turned off, it's the safe floor for untrusted callers.</summary>
+    private List<IRagTool> BuildAgentTools(SearchTool search, string? domain, AgentToolScope scope)
+    {
+        var tools = new List<IRagTool> { search };
+        if (scope.HasFlag(AgentToolScope.Classification))
+        {
+            tools.Add(new ListDomainsTool(this));
+            tools.Add(new ListLabelsTool(this));
+        }
+        if (scope.HasFlag(AgentToolScope.Mutation))
+        {
+            tools.Add(new CreateDomainTool(this));
+            tools.Add(new CreateLabelTool(this));
+            tools.Add(new IngestTool(this, domain));
+            tools.Add(new CreateProfileTool(this));
+            tools.Add(new CreateGuardrailTool(this));
+        }
+        if (scope.HasFlag(AgentToolScope.External))
+            tools.AddRange(_externalTools);
+        return tools;
     }
 
     /// <summary>Apply the output guardrail to an agentic answer before returning it.</summary>

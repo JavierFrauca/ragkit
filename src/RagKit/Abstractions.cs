@@ -190,3 +190,29 @@ public interface IRagTool
     string ParametersSchema { get; }
     Task<string> InvokeAsync(string argumentsJson, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Which tools <see cref="RagClient.AskAgentAsync(string,string?,int,AgentToolScope,CancellationToken)"/>
+/// offers the model. <see cref="SearchOnly"/> (the flags default value) always includes
+/// <c>search_knowledge_base</c> — it can't be turned off. Combine the other flags to widen
+/// the surface; <see cref="All"/> reproduces the pre-scoping behavior (every internal tool
+/// plus any registered external ones).
+/// </summary>
+[Flags]
+public enum AgentToolScope
+{
+    /// <summary>Only <c>search_knowledge_base</c> — safe for public/unauthenticated callers.</summary>
+    SearchOnly = 0,
+
+    /// <summary>Read-only structure tools: <c>list_domains</c>, <c>list_labels</c>.</summary>
+    Classification = 1 << 0,
+
+    /// <summary>State-mutating tools: create domain/label/profile/guardrail, ingest a document.</summary>
+    Mutation = 1 << 1,
+
+    /// <summary>Externally registered tools (e.g. MCP connectors) via <see cref="RagClient.RegisterTool"/>.</summary>
+    External = 1 << 2,
+
+    /// <summary>Every tool — the behavior before this scope existed. Not safe for untrusted callers.</summary>
+    All = Classification | Mutation | External,
+}

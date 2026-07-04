@@ -55,6 +55,23 @@ sealed class FakeAgentChat : IChatClient
     }
 }
 
+/// <summary>A tool-capable fake that answers immediately (no tool calls) but records the
+/// tool specs and messages it was offered — for asserting on scoping/history.</summary>
+sealed class SpyAgentChat : IChatClient
+{
+    public IReadOnlyList<ToolSpec>? LastTools;
+    public IReadOnlyList<AgentMessage>? LastMessages;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+        => Task.FromResult("plain");
+    public bool SupportsTools => true;
+    public Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
+    {
+        LastTools = tools;
+        LastMessages = messages;
+        return Task.FromResult(new AgentTurn("respuesta sin buscar", Array.Empty<ToolCall>()));
+    }
+}
+
 /// <summary>A fake MCP connection exposing one "echo" tool.</summary>
 sealed class FakeMcp : IMcpConnection
 {
@@ -455,6 +472,56 @@ public class RagKitTests
 
         var ans = await rag.AskAgentAsync("q", "docs");  // FakeChat.SupportsTools == false
         Assert.Equal("one-shot answer", ans.Answer);
+    }
+
+    [Fact]
+    public async Task AskAgentAsync_with_SearchOnly_never_offers_mutation_tools_to_the_model()
+    {
+        var spy = new SpyAgentChat();
+        var rag = await BuildAsync(spy, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        await rag.AskAgentAsync("pregunta", "docs", tools: AgentToolScope.SearchOnly);
+
+        Assert.Equal(new[] { "search_knowledge_base" }, spy.LastTools!.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task AskAgentAsync_default_scope_still_offers_every_tool()
+    {
+        var spy = new SpyAgentChat();
+        var rag = await BuildAsync(spy, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        await rag.AskAgentAsync("pregunta", "docs");  // no `tools:` — default must stay All
+
+        Assert.Equal(
+            new[]
+            {
+                "search_knowledge_base", "list_domains", "list_labels", "create_domain",
+                "create_label", "ingest_document", "create_profile", "create_guardrail",
+            },
+            spy.LastTools!.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task AskAgentAsync_with_history_seeds_prior_turns_into_the_agent_loop()
+    {
+        var spy = new SpyAgentChat();
+        var rag = await BuildAsync(spy, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        var history = new List<ChatMessage>
+        {
+            new("user", "¿qué es RagKit?"),
+            new("assistant", "Una librería de RAG."),
+        };
+
+        var ans = await rag.AskAgentAsync("¿y qué más ofrece?", history, domain: "docs", tools: AgentToolScope.SearchOnly);
+
+        Assert.Equal("respuesta sin buscar", ans.Answer);
+        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿qué es RagKit?");
+        Assert.Contains(spy.LastMessages!, m => m.Role == "assistant" && m.Content == "Una librería de RAG.");
+        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿y qué más ofrece?");
     }
 
     [Fact]

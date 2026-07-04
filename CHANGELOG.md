@@ -4,6 +4,29 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.4.0] - 2026-07-04
+
+Acota el modo agéntico para poder exponerlo en tráfico público/no autenticado
+sin dar acceso a las tools de mutación, y le añade el historial explícito que
+ya tenía la ruta no agéntica desde v0.2.0.
+
+### Añadido
+- **`AgentToolScope`**: nuevo enum `[Flags]` (`SearchOnly`, `Classification`,
+  `Mutation`, `External`, `All`) y parámetro `tools` en `AskAgentAsync`, para
+  restringir qué tools se ofrecen al modelo en cada llamada. `search_knowledge_base`
+  siempre está disponible; `SearchOnly` (el valor por defecto de los flags, `0`)
+  es el modo seguro para llamadas públicas/sin autenticar — ninguna de las 5
+  tools que mutan estado (`create_domain`, `create_label`, `ingest_document`,
+  `create_profile`, `create_guardrail`) se ofrece al modelo. El valor por
+  defecto del parámetro sigue siendo `All`, así que el comportamiento previo no
+  cambia para quien no pase el argumento explícitamente.
+- **`AskAgentAsync` con historial explícito**: nueva sobrecarga
+  `AskAgentAsync(question, priorHistory, domain, profile, maxSteps, tools, ct)`,
+  simétrica a la que ya tenía `AskAsync` desde v0.2.0 — el bucle agéntico se
+  siembra con la conversación previa (aportada por el consumidor, sin objeto de
+  sesión oculto) y respeta un `profile` fijado en vez de reenrutar en blanco
+  cada turno.
+
 ## [0.3.1] - 2026-07-04
 
 Dos correcciones detectadas en una auditoría de paridad entre los 4 backends.
