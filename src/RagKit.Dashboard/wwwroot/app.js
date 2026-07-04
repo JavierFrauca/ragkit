@@ -132,6 +132,43 @@ document.getElementById("form-doc-filter").addEventListener("submit", async (e) 
   await loadDocuments(formData(e.target).domain);
 });
 
+// --- ingest (SSE progress) ------------------------------------------------------
+
+document.getElementById("form-ingest").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const log = document.getElementById("ingest-log");
+  log.innerHTML = "";
+
+  let res;
+  try {
+    res = await api("POST", "api/ingest", {
+      path: f.path.value,
+      domain: f.domain.value || null,
+      recursive: f.recursive.checked, // unlike formData(), a checkbox needs its live .checked read directly
+    });
+  } catch (err) {
+    log.append(el("p", { class: "warn" }, String(err.message || err)));
+    return;
+  }
+
+  const source = new EventSource(`api/ingest/${res.runId}/stream`);
+  source.addEventListener("ingest", (ev) => {
+    const payload = JSON.parse(ev.data);
+    if (payload.done) {
+      log.append(el("p", { class: payload.status === "Failed" ? "warn" : "muted" },
+        payload.status === "Failed" ? `Fallo: ${payload.error}` : "Ingesta completada."));
+      source.close();
+      loadDocuments();
+      loadStats();
+      return;
+    }
+    const r = payload.result;
+    log.append(el("p", {}, `${r.source}: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}`));
+  });
+  source.onerror = () => source.close();
+});
+
 // --- guardrails ----------------------------------------------------------------
 
 async function loadGuardrails() {

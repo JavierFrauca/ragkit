@@ -21,9 +21,13 @@ app.MapRagDashboard(path: "/rag-admin");
 - **Prompts**: editar `OneShotPrompt`/`ChatPrompt`/prompts por dominio en
   caliente — se aplican en la siguiente pregunta, sin recrear el `RagClient`;
   no se persisten entre reinicios del proceso.
+- **Ingesta con seguimiento de progreso**: ingiere una carpeta ya presente en
+  el servidor (`IngestFolderAsync`) y ve el resultado fichero a fichero en
+  tiempo real vía Server-Sent Events, sin polling. Solo rutas de servidor —
+  no hay subida de ficheros desde el navegador. El estado de cada ingesta es
+  en memoria y se pierde al reiniciar el proceso.
 
-**En desarrollo**: ingesta con seguimiento de progreso y un playground de
-preguntas (`AskAsync`/`AskStreamAsync`).
+**En desarrollo**: un playground de preguntas (`AskAsync`/`AskStreamAsync`).
 
 ## ⚠️ Seguridad
 
