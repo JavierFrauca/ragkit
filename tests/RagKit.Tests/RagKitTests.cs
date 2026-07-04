@@ -691,6 +691,47 @@ public class RagKitTests
     }
 
     [Fact]
+    public void RrfFuse_preserves_the_chunk_id_of_a_lexical_only_match()
+    {
+        // Regression: RrfFuse used to promote a lexical-only match to a StoredHit
+        // without carrying over its real Id, so hits that only came from the lexical
+        // side of hybrid search silently lost their id.
+        var method = typeof(RagClient).GetMethod("RrfFuse",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var lexicalOnly = new StoredChunk("only-lexical.txt", "contenido", null, Array.Empty<string>(), default, "chunk-42");
+        var result = (List<StoredHit>)method.Invoke(null, new object[]
+        {
+            Array.Empty<StoredHit>(), // no vector-side matches: this hit is lexical-only
+            new List<(StoredChunk Chunk, double Score)> { (lexicalOnly, 1.0) },
+        })!;
+
+        Assert.Single(result);
+        Assert.Equal("chunk-42", result[0].Id);
+    }
+
+    [Fact]
+    public async Task Lexical_index_sync_after_ingest_preserves_the_real_ingestion_timestamp()
+    {
+        // Regression: the post-ingest sync into the lexical index used to build a
+        // StoredChunk without IngestedAtUtc, even though the real timestamp was in
+        // scope — the lexical-only copy of a freshly ingested chunk got a default
+        // (epoch) timestamp instead.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, AutoClassify = false, TopK = 3 });
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido inicial", "seed.txt", domain: "docs");
+        await rag.AskAsync("contenido", domain: "docs"); // forces the lexical index to load
+
+        var before = DateTime.UtcNow;
+        await rag.IngestAsync("contenido nuevo tras cargar el indice", "fresh.txt", domain: "docs");
+
+        var lexicalField = typeof(RagClient).GetField("_lexical", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var lexical = (LexicalIndex)lexicalField.GetValue(rag)!;
+        var freshChunk = lexical.Search("contenido nuevo", 5, "docs", null).Single(h => h.Chunk.Source == "fresh.txt").Chunk;
+
+        Assert.True(freshChunk.IngestedAtUtc >= before); // not default/epoch
+    }
+
+    [Fact]
     public async Task Reranker_is_applied_after_fusion()
     {
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, TopK = 3 });

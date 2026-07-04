@@ -4,6 +4,20 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.6.3] - 2026-07-04
+
+### Corregido
+- **Pérdida de `Id`/`IngestedAtUtc` en la fusión híbrida** — dos omisiones
+  encontradas en la revisión de calidad de la sesión:
+  - `RrfFuse` promovía un match solo-léxico a `StoredHit` sin pasar el `Id`
+    real del `StoredChunk` de origen, dejando ese hit con `Id=""`.
+  - Tras ingesta, la sincronización del índice léxico construía un
+    `StoredChunk` sin `IngestedAtUtc` (aunque el timestamp real estaba en
+    ámbito), dejando la copia léxica del chunk con la marca de tiempo por
+    defecto. (El `Id` no aplica en este segundo caso: `EmbeddedChunk` no
+    tiene ese campo — limitación conocida y documentada.)
+  ([#29](https://github.com/JavierFrauca/ragkit/issues/29))
+
 ## [0.6.2] - 2026-07-04
 
 ### Corregido
