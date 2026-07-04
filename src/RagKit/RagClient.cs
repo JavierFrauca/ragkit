@@ -79,6 +79,37 @@ public sealed class RagClient
     /// <summary>Install an optional second-stage reranker (applied after RRF fusion).</summary>
     public void SetReranker(IReranker reranker) => _reranker = reranker;
 
+    // --- live prompt editing --------------------------------------------------
+    // Forward straight to RagOptions, which SelectPrompt already re-reads on every
+    // call — so these take effect on the very next Ask, no client recreation needed.
+    // (Before this, the only way to edit a prompt live was for the consumer to hold
+    // onto its own RagOptions instance and mutate it directly, as examples/MiniRag
+    // does — these properties give any consumer, including RagKit.Dashboard, a
+    // supported way to do the same without needing the original RagOptions.)
+
+    /// <summary>System prompt (Markdown) for one-shot <see cref="AskAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>. Null → citation-aware default.</summary>
+    public string? OneShotPrompt
+    {
+        get => _options.OneShotPrompt;
+        set => _options.OneShotPrompt = value;
+    }
+
+    /// <summary>System prompt (Markdown) for <see cref="StartChat"/>. Null → falls back to <see cref="OneShotPrompt"/> or the default.</summary>
+    public string? ChatPrompt
+    {
+        get => _options.ChatPrompt;
+        set => _options.ChatPrompt = value;
+    }
+
+    /// <summary>Per-domain system prompts, read-only view — see <see cref="SetDomainPrompt"/>/<see cref="RemoveDomainPrompt"/> to edit.</summary>
+    public IReadOnlyDictionary<string, string> DomainPrompts => (IReadOnlyDictionary<string, string>)_options.DomainPrompts;
+
+    /// <summary>Set (or replace) the system prompt for a specific domain.</summary>
+    public void SetDomainPrompt(string domain, string prompt) => _options.DomainPrompts[domain] = prompt;
+
+    /// <summary>Remove a domain's prompt override, if any. Returns true if one was removed.</summary>
+    public bool RemoveDomainPrompt(string domain) => _options.DomainPrompts.Remove(domain);
+
     private static IChatClient BuildChat(LlmConfig cfg, string which)
     {
         if (!cfg.IsConfigured)

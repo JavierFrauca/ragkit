@@ -4,6 +4,21 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.4.0] - 2026-07-04
+
+Primer paso hacia `RagKit.Dashboard` (panel de mantenimiento opt-in, en
+desarrollo): expone en `RagClient` la edición en caliente de prompts que
+hasta ahora solo era posible reteniendo el `RagOptions` original por fuera.
+
+### Añadido
+- `RagClient.OneShotPrompt`/`ChatPrompt` (get/set) y
+  `DomainPrompts`/`SetDomainPrompt`/`RemoveDomainPrompt`: forwardean a los
+  campos de `RagOptions` que ya se releían en caliente en cada pregunta
+  (`SelectPrompt`), así que el cambio surte efecto en la siguiente llamada
+  sin recrear el cliente. Antes solo `examples/MiniRag/Rag.cs` conseguía
+  esto reteniendo su propio `RagOptions`; ahora es una API soportada para
+  cualquier consumidor. ([#20](https://github.com/JavierFrauca/ragkit/issues/20))
+
 ## [0.3.2] - 2026-07-04
 
 ### Cambiado

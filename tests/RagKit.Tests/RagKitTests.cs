@@ -277,6 +277,44 @@ public class RagKitTests
     }
 
     [Fact]
+    public async Task OneShotPrompt_and_ChatPrompt_are_editable_live_without_recreating_the_client()
+    {
+        var answer = new FakeChat("respuesta");
+        var rag = await BuildAsync(answer, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido", "d.txt", domain: "docs");
+
+        Assert.Null(rag.OneShotPrompt); // default: citation-aware default prompt, not set
+
+        rag.OneShotPrompt = "Eres un asistente muy formal.";
+        await rag.AskAsync("pregunta", domain: "docs");
+        Assert.Equal("Eres un asistente muy formal.", answer.Last![0].Content);
+
+        rag.OneShotPrompt = "Eres un asistente muy informal.";
+        await rag.AskAsync("otra pregunta", domain: "docs");
+        Assert.Equal("Eres un asistente muy informal.", answer.Last![0].Content); // takes effect on the very next call
+
+        rag.ChatPrompt = "Prompt de chat.";
+        var chat = rag.StartChat(domain: "docs");
+        await chat.AskAsync("hola");
+        Assert.Equal("Prompt de chat.", answer.Last![0].Content);
+    }
+
+    [Fact]
+    public async Task DomainPrompts_can_be_set_and_removed()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        Assert.Empty(rag.DomainPrompts);
+
+        rag.SetDomainPrompt("fiscal", "Eres un asesor fiscal.");
+        Assert.Equal("Eres un asesor fiscal.", rag.DomainPrompts["fiscal"]);
+
+        Assert.True(rag.RemoveDomainPrompt("fiscal"));
+        Assert.False(rag.RemoveDomainPrompt("fiscal")); // already gone
+        Assert.Empty(rag.DomainPrompts);
+    }
+
+    [Fact]
     public async Task Input_guardrail_blocks_before_retrieval_and_tier1()
     {
         var answer = new FakeChat("no debería llamarse");

@@ -216,6 +216,17 @@ await rag.RemoveProfileAsync("fontanero", "construccion");
 var perfiles = await rag.ListProfilesAsync();
 ```
 
+**Prompts editables en caliente.** `OneShotPrompt`/`ChatPrompt`/`DomainPrompts`
+se pueden leer y mutar directamente sobre el `RagClient` ya creado — el cambio
+se aplica en la siguiente pregunta, sin recrear el cliente (a diferencia de
+perfiles/guardarails, esto **no** se persiste en el store; vive en memoria
+del proceso):
+```csharp
+rag.OneShotPrompt = "Eres un asistente muy formal.";
+rag.SetDomainPrompt("fiscal", "Eres un asesor fiscal.");
+rag.RemoveDomainPrompt("fiscal");
+```
+
 ## Gestión de documentos
 Más allá de ingestar, RagKit sabe **borrar, listar, reingestar sin duplicar y
 recorrer una carpeta**, con el mismo contrato en los 4 backends:
@@ -308,5 +319,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 64 tests, sin red (net8.0 y net10.0)
+dotnet test   # 66 tests, sin red (net8.0 y net10.0)
 ```
