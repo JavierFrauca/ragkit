@@ -4,6 +4,29 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.6.1] - 2026-07-04
+
+### Corregido
+- **Aislamiento del manifiesto de `IngestIfChangedAsync`** — dos bugs de
+  corrección de datos silenciosos encontrados en una revisión de calidad de
+  la sesión:
+  - `manifestKey` se construía como `$"{domain}:{source}"` sin escapar `:`,
+    por lo que dos pares `(domain, source)` distintos (p.ej. `domain="a:b",
+    source="c"` y `domain="a", source="b:c"`) podían producir la misma
+    clave y pisar el hash de manifiesto del otro documento. Ahora se escapan
+    `\` y `:` en cada parte antes de unirlas, con un centinela distinto para
+    `domain is null` que nunca colisiona con un valor escapado. Se aplicó el
+    mismo escapado en la codificación del catálogo genérico de
+    `QdrantVectorStore` por defensa en profundidad.
+  - Con `InMemoryVectorStore`, el catálogo (incluido el hash del manifiesto)
+    se persiste a disco pero los chunks no — tras reiniciar el proceso con
+    el mismo `dataPath`, `IngestIfChangedAsync` confiaba ciegamente en el
+    hash superviviente y devolvía `Unchanged` con el store realmente vacío.
+    Ahora, antes de aceptar un hash coincidente, se comprueba con
+    `ListChunksAsync(source, domain, take: 1)` que el store todavía tiene
+    contenido para ese source; si no, se re-ingiere.
+  ([#25](https://github.com/JavierFrauca/ragkit/issues/25))
+
 ## [0.6.0] - 2026-07-04
 
 ### Añadido

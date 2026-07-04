@@ -201,22 +201,30 @@ public sealed class QdrantVectorStore : IVectorStore
     // Generic consumer catalog: distinct "catalog:" id prefix so a caller-chosen
     // kind/key (e.g. kind="domain") can never collide with the internal domain/label/
     // settings points, which are namespaced under "domain:"/"label:"/"settings:".
+    // kind/key are escaped before joining (defense in depth on top of RagClient's own
+    // escaping of its manifest keys) so a ':' inside either can never make two distinct
+    // (kind, key) pairs hash to the same point id.
     public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
     {
-        var pay = await GetPointPayloadAsync(_catalog, Uuid($"catalog:{kind}:{key}"), ct).ConfigureAwait(false);
+        var pay = await GetPointPayloadAsync(_catalog, CatalogPointId(kind, key), ct).ConfigureAwait(false);
         return pay is null ? null : Str(pay.Value, "json");
     }
 
     public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
-        => UpsertAsync(_catalog, Uuid($"catalog:{kind}:{key}"), new float[] { 0f },
+        => UpsertAsync(_catalog, CatalogPointId(kind, key), new float[] { 0f },
             new { kind = "catalog", entryKind = kind, key, json }, ct);
 
     public async Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
     {
         using var resp = await _http.PostAsJsonAsync($"collections/{_catalog}/points/delete?wait=true",
-            new { points = new[] { Uuid($"catalog:{kind}:{key}") } }, ct).ConfigureAwait(false);
+            new { points = new[] { CatalogPointId(kind, key) } }, ct).ConfigureAwait(false);
         await ReadAsync(resp, ct).ConfigureAwait(false);
     }
+
+    private static string CatalogPointId(string kind, string key)
+        => Uuid($"catalog:{EscapeCatalogPart(kind)}:{EscapeCatalogPart(key)}");
+
+    private static string EscapeCatalogPart(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:");
 
     public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
     {

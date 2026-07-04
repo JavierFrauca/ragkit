@@ -319,11 +319,20 @@ public sealed class RagClient
         string text, string source, string? domain = null, IEnumerable<string>? labels = null, CancellationToken ct = default)
     {
         var hash = ContentHash.Compute(text);
-        var manifestKey = domain is null ? source : $"{domain}:{source}";
+        var manifestKey = BuildManifestKey(domain, source);
         var previousHash = await _store.GetCatalogEntryAsync(IngestManifestKind, manifestKey, ct).ConfigureAwait(false);
         if (previousHash == hash)
-            return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
-                Reason: "El contenido no ha cambiado desde la última ingesta.");
+        {
+            // The manifest hash alone isn't enough: a backend (e.g. InMemoryVectorStore)
+            // may persist the catalog to disk while the chunks themselves stay in-memory
+            // only, so a process restart can leave a "matching" manifest pointing at chunks
+            // that no longer exist. Confirm the store still actually has content for this
+            // source before trusting the hash.
+            var stillPresent = await _store.ListChunksAsync(source, domain, take: 1, ct: ct).ConfigureAwait(false);
+            if (stillPresent.Items.Count > 0)
+                return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
+                    Reason: "El contenido no ha cambiado desde la última ingesta.");
+        }
 
         if (previousHash is not null)
             await RemoveDocumentAsync(source, domain, ct).ConfigureAwait(false);
@@ -333,6 +342,19 @@ public sealed class RagClient
             await _store.SaveCatalogEntryAsync(IngestManifestKind, manifestKey, hash, ct).ConfigureAwait(false);
         return result;
     }
+
+    /// <summary>
+    /// Builds an unambiguous manifest key from <paramref name="domain"/> and
+    /// <paramref name="source"/>: naively joining them as <c>$"{domain}:{source}"</c>
+    /// lets two distinct pairs collide (e.g. <c>("a:b", "c")</c> and <c>("a", "b:c")</c>
+    /// both yield <c>"a:b:c"</c>). Escaping <c>\</c> and <c>:</c> in each part before
+    /// joining with an unescaped <c>:</c> makes the join injective; a control-character
+    /// sentinel stands in for a null domain so it can never collide with an escaped one.
+    /// </summary>
+    private static string BuildManifestKey(string? domain, string source)
+        => $"{(domain is null ? "\u0000" : EscapeKeyPart(domain))}:{EscapeKeyPart(source)}";
+
+    private static string EscapeKeyPart(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:");
 
     /// <summary>Idempotent counterpart of <see cref="IngestFileAsync"/> — see
     /// <see cref="IngestIfChangedAsync"/>.</summary>
