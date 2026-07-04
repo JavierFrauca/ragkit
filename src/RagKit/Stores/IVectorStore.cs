@@ -13,12 +13,21 @@ public enum VectorStoreKind
     Postgres,
 }
 
-/// <summary>A retrieved chunk with its score and provenance.</summary>
-public sealed record StoredHit(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, double Score);
+/// <summary>A retrieved chunk with its score and provenance. <see cref="Id"/> is the
+/// backend's own point/row id (empty when a backend predates it) — trailing default
+/// so existing call sites keep compiling.</summary>
+public sealed record StoredHit(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, double Score, string Id = "");
 
 /// <summary>A stored chunk (no score) — used to rebuild the lexical index for hybrid search,
-/// and to aggregate the document inventory (<see cref="IVectorStore.ListDocumentsAsync"/>).</summary>
-public sealed record StoredChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, DateTime IngestedAtUtc = default);
+/// to aggregate the document inventory (<see cref="IVectorStore.ListDocumentsAsync"/>), and
+/// as the page item of <see cref="IVectorStore.ListChunksAsync"/> (where <see cref="Id"/> is
+/// what a caller would use to reference this exact chunk later).</summary>
+public sealed record StoredChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, DateTime IngestedAtUtc = default, string Id = "");
+
+/// <summary>One page of <see cref="IVectorStore.ListChunksAsync"/>: the chunks plus an
+/// opaque cursor to fetch the next page, or null when there isn't one. The cursor's
+/// shape is backend-specific (an offset, a point id…) — callers must not parse it.</summary>
+public sealed record ChunkPage(IReadOnlyList<StoredChunk> Items, string? NextCursor);
 
 /// <summary>A chunk plus its vector, ready to be indexed — the unit of batch ingestion.</summary>
 public sealed record EmbeddedChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, float[] Vector, DateTime IngestedAtUtc = default);
@@ -94,6 +103,19 @@ public interface IVectorStore
     Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default);
 
     /// <summary>
+    /// Delete every chunk indexed under <paramref name="domain"/>, across every
+    /// <c>source</c>. Returns how many chunks were removed. Does not remove the
+    /// domain definition itself — see <see cref="DeleteDomainAsync"/>.
+    /// </summary>
+    Task<int> DeleteByDomainAsync(string domain, CancellationToken ct = default);
+
+    /// <summary>
+    /// Remove the domain definition itself (not its chunks — see <see
+    /// cref="DeleteByDomainAsync"/>). Returns true if a domain with that name existed.
+    /// </summary>
+    Task<bool> DeleteDomainAsync(string name, CancellationToken ct = default);
+
+    /// <summary>
     /// Aggregate stored chunks into documents (one entry per distinct <c>Source</c>,
     /// optionally scoped to a <paramref name="domain"/>). The default implementation
     /// groups the result of <see cref="EnumerateAsync"/> in-process; backends may
@@ -107,6 +129,28 @@ public interface IVectorStore
             .GroupBy(c => (c.Source, c.Domain))
             .Select(g => new DocumentInfo(g.Key.Source, g.Key.Domain, g.Count(), g.Max(c => c.IngestedAtUtc)))
             .ToList();
+    }
+
+    /// <summary>
+    /// One page of the chunks under <paramref name="source"/> (optionally scoped to a
+    /// <paramref name="domain"/>), at most <paramref name="take"/> items. Pass the
+    /// previous call's <see cref="ChunkPage.NextCursor"/> as <paramref name="cursor"/>
+    /// to fetch the next page; start with <c>cursor: null</c>. The default
+    /// implementation sorts <see cref="EnumerateAsync"/>'s result by <c>Id</c> and
+    /// pages over it in-process (an integer offset as the cursor) — backends override
+    /// it with native/keyset pagination instead of loading the whole collection.
+    /// </summary>
+    async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+    {
+        var all = (await EnumerateAsync(ct).ConfigureAwait(false))
+            .Where(c => string.Equals(c.Source, source, StringComparison.Ordinal)
+                && (domain is null || string.Equals(c.Domain, domain, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(c => c.Id, StringComparer.Ordinal)
+            .ToList();
+        int offset = cursor is null ? 0 : int.Parse(cursor);
+        var page = all.Skip(offset).Take(take).ToList();
+        string? next = offset + page.Count < all.Count ? (offset + page.Count).ToString() : null;
+        return new ChunkPage(page, next);
     }
 
     // --- generic catalog (optional key/value storage for consumer-owned metadata) ---

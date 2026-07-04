@@ -11,7 +11,7 @@ namespace RagKit;
 /// </summary>
 public sealed class InMemoryVectorStore : IVectorStore
 {
-    private sealed record Item(string Source, string Text, string? Domain, string[] Labels, float[] Vec, DateTime IngestedAtUtc);
+    private sealed record Item(string Id, string Source, string Text, string? Domain, string[] Labels, float[] Vec, DateTime IngestedAtUtc);
 
     private sealed class Meta
     {
@@ -126,7 +126,7 @@ public sealed class InMemoryVectorStore : IVectorStore
         lock (_lock)
         {
             EnsureInit();
-            _items.Add(new Item(source, text, domain, labels.ToArray(), vector, ingestedAtUtc));
+            _items.Add(new Item(Guid.NewGuid().ToString(), source, text, domain, labels.ToArray(), vector, ingestedAtUtc));
         }
         return Task.CompletedTask;
     }
@@ -137,7 +137,7 @@ public sealed class InMemoryVectorStore : IVectorStore
         {
             EnsureInit();
             foreach (var c in chunks)
-                _items.Add(new Item(c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector, c.IngestedAtUtc));
+                _items.Add(new Item(Guid.NewGuid().ToString(), c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector, c.IngestedAtUtc));
         }
         return Task.CompletedTask;
     }
@@ -152,7 +152,7 @@ public sealed class InMemoryVectorStore : IVectorStore
             {
                 if (domain != null && !string.Equals(it.Domain, domain, StringComparison.OrdinalIgnoreCase)) continue;
                 if (labels is { Count: > 0 } && !labels.All(l => it.Labels.Contains(l, StringComparer.OrdinalIgnoreCase))) continue;
-                scored.Add(new StoredHit(it.Source, it.Text, it.Domain, it.Labels, Vec.Dot(query, it.Vec)));
+                scored.Add(new StoredHit(it.Source, it.Text, it.Domain, it.Labels, Vec.Dot(query, it.Vec), it.Id));
             }
         }
         scored.Sort((a, b) => b.Score.CompareTo(a.Score));
@@ -169,7 +169,7 @@ public sealed class InMemoryVectorStore : IVectorStore
     {
         lock (_lock)
             return Task.FromResult<IReadOnlyList<StoredChunk>>(
-                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc)).ToList());
+                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id)).ToList());
     }
 
     public Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
@@ -180,6 +180,45 @@ public sealed class InMemoryVectorStore : IVectorStore
                 string.Equals(i.Source, source, StringComparison.Ordinal) &&
                 (domain is null || string.Equals(i.Domain, domain, StringComparison.OrdinalIgnoreCase)));
             return Task.FromResult(removed);
+        }
+    }
+
+    public Task<int> DeleteByDomainAsync(string domain, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            int removed = _items.RemoveAll(i => string.Equals(i.Domain, domain, StringComparison.OrdinalIgnoreCase));
+            return Task.FromResult(removed);
+        }
+    }
+
+    public Task<bool> DeleteDomainAsync(string name, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            EnsureInit();
+            int removed = _meta.Domains.RemoveAll(d => string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (removed > 0) Save();
+            return Task.FromResult(removed > 0);
+        }
+    }
+
+    public Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            // Insertion order into _items is stable across calls within one process, so
+            // an integer offset is a correct (if not durable-across-restart) cursor.
+            var matches = _items
+                .Where(i => string.Equals(i.Source, source, StringComparison.Ordinal)
+                    && (domain is null || string.Equals(i.Domain, domain, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            int offset = cursor is null ? 0 : int.Parse(cursor);
+            var page = matches.Skip(offset).Take(take)
+                .Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id))
+                .ToList();
+            string? next = offset + page.Count < matches.Count ? (offset + page.Count).ToString() : null;
+            return Task.FromResult(new ChunkPage(page, next));
         }
     }
 

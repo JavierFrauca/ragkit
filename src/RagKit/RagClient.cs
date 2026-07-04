@@ -355,10 +355,37 @@ public sealed class RagClient
         return removed;
     }
 
+    /// <summary>
+    /// Remove an entire domain: every chunk indexed under it (<see
+    /// cref="IVectorStore.DeleteByDomainAsync"/>) plus the domain definition itself
+    /// (<see cref="IVectorStore.DeleteDomainAsync"/>). Returns how many chunks were
+    /// removed. Also drops those entries from the in-memory hybrid (lexical) index, if
+    /// it's been loaded, so stale hits don't keep surfacing. Labels and any
+    /// profiles/guardrails scoped to the domain are untouched — remove them separately
+    /// if needed.
+    /// </summary>
+    public async Task<int> RemoveDomainAsync(string name, CancellationToken ct = default)
+    {
+        var removed = await _store.DeleteByDomainAsync(name, ct).ConfigureAwait(false);
+        await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
+        if (removed > 0 && _options.Hybrid && Volatile.Read(ref _lexicalLoaded))
+            _lexical.RemoveByDomain(name);
+        return removed;
+    }
+
     /// <summary>List ingested documents (one entry per distinct source), optionally
     /// scoped to a domain — the aggregate view over the individual chunks.</summary>
     public Task<IReadOnlyList<DocumentInfo>> ListDocumentsAsync(string? domain = null, CancellationToken ct = default)
         => _store.ListDocumentsAsync(domain, ct);
+
+    /// <summary>
+    /// One page of the chunks under <paramref name="source"/> (optionally scoped to a
+    /// <paramref name="domain"/>). Pass the previous call's <see
+    /// cref="ChunkPage.NextCursor"/> as <paramref name="cursor"/> to fetch the next
+    /// page; start with <c>cursor: null</c> and keep going until it comes back null.
+    /// </summary>
+    public Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+        => _store.ListChunksAsync(source, domain, take, cursor, ct);
 
     // --- generic catalog: consumer-owned key/value metadata, persisted alongside the vectors ---
 

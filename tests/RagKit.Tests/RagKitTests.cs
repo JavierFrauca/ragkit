@@ -726,6 +726,7 @@ public class RagKitTests
         var hits = await store.SearchAsync(await emb.EmbedAsync("IVA"), 5, "fiscal");
         Assert.NotEmpty(hits);
         Assert.Equal("fiscal", hits[0].Domain);
+        Assert.False(string.IsNullOrEmpty(hits[0].Id)); // FR-10: real row id, not empty
         Assert.True(await store.CountAsync() >= 1);
 
         // Label filter + guard.
@@ -740,6 +741,23 @@ public class RagKitTests
         Assert.Equal("hash-1", await store.GetCatalogEntryAsync("manifest", "doc.txt"));
         await store.DeleteCatalogEntryAsync("manifest", "doc.txt");
         Assert.Null(await store.GetCatalogEntryAsync("manifest", "doc.txt"));
+
+        // FR-10: paginated per-document listing.
+        await store.AddChunkAsync("multi.txt", "parte uno", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte uno"));
+        await store.AddChunkAsync("multi.txt", "parte dos", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte dos"));
+        var page1 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1);
+        Assert.Single(page1.Items);
+        Assert.NotNull(page1.NextCursor);
+        var page2 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1, cursor: page1.NextCursor);
+        Assert.Single(page2.Items);
+        Assert.Null(page2.NextCursor);
+        Assert.NotEqual(page1.Items[0].Id, page2.Items[0].Id);
+
+        // FR-09: whole-domain deletion.
+        Assert.Equal(2, await store.DeleteByDomainAsync("fiscal"));
+        Assert.True(await store.DeleteDomainAsync("fiscal"));
+        Assert.False(await store.DeleteDomainAsync("fiscal")); // already gone
+        Assert.DoesNotContain(await store.ListDomainsAsync(), d => d.Name == "fiscal");
     }
 
     [Fact]
@@ -760,6 +778,7 @@ public class RagKitTests
         var hits = await store.SearchAsync(await emb.EmbedAsync("IVA"), 5, "fiscal");
         Assert.NotEmpty(hits);
         Assert.Equal("fiscal", hits[0].Domain);
+        Assert.False(string.IsNullOrEmpty(hits[0].Id)); // FR-10: real row id, not empty
         Assert.NotEmpty(await store.SearchAsync(await emb.EmbedAsync("IVA"), 5, "fiscal", new[] { "iva" }));
 
         await Assert.ThrowsAsync<EmbeddingMismatchException>(
@@ -772,6 +791,23 @@ public class RagKitTests
         Assert.Equal("hash-1", await store.GetCatalogEntryAsync("manifest", "doc.txt"));
         await store.DeleteCatalogEntryAsync("manifest", "doc.txt");
         Assert.Null(await store.GetCatalogEntryAsync("manifest", "doc.txt"));
+
+        // FR-10: paginated per-document listing.
+        await store.AddChunkAsync("multi.txt", "parte uno", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte uno"));
+        await store.AddChunkAsync("multi.txt", "parte dos", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte dos"));
+        var page1 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1);
+        Assert.Single(page1.Items);
+        Assert.NotNull(page1.NextCursor);
+        var page2 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1, cursor: page1.NextCursor);
+        Assert.Single(page2.Items);
+        Assert.Null(page2.NextCursor);
+        Assert.NotEqual(page1.Items[0].Id, page2.Items[0].Id);
+
+        // FR-09: whole-domain deletion.
+        Assert.Equal(2, await store.DeleteByDomainAsync("fiscal"));
+        Assert.True(await store.DeleteDomainAsync("fiscal"));
+        Assert.False(await store.DeleteDomainAsync("fiscal")); // already gone
+        Assert.DoesNotContain(await store.ListDomainsAsync(), d => d.Name == "fiscal");
     }
 
     [Fact]
@@ -796,6 +832,7 @@ public class RagKitTests
         var hits = await store.SearchAsync(await emb.EmbedAsync("IVA"), 5, "fiscal");
         Assert.NotEmpty(hits);
         Assert.Equal("fiscal", hits[0].Domain);
+        Assert.False(string.IsNullOrEmpty(hits[0].Id)); // FR-10: real point id, not empty
 
         // Guard: reopening the same collection with a different dimension must throw.
         await Assert.ThrowsAsync<EmbeddingMismatchException>(
@@ -811,6 +848,22 @@ public class RagKitTests
         Assert.Contains(await store.ListDomainsAsync(), d => d.Name == "fiscal"); // untouched by the catalog write
         await store.DeleteCatalogEntryAsync("domain", "fiscal");
         Assert.Null(await store.GetCatalogEntryAsync("domain", "fiscal"));
+
+        // FR-10: paginated per-document listing.
+        await store.AddChunkAsync("multi.txt", "parte uno", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte uno"));
+        await store.AddChunkAsync("multi.txt", "parte dos", "fiscal", Array.Empty<string>(), await emb.EmbedAsync("parte dos"));
+        var page1 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1);
+        Assert.Single(page1.Items);
+        Assert.NotNull(page1.NextCursor);
+        var page2 = await store.ListChunksAsync("multi.txt", "fiscal", take: 1, cursor: page1.NextCursor);
+        Assert.Single(page2.Items);
+        Assert.NotEqual(page1.Items[0].Id, page2.Items[0].Id);
+
+        // FR-09: whole-domain deletion.
+        Assert.Equal(2, await store.DeleteByDomainAsync("fiscal"));
+        Assert.True(await store.DeleteDomainAsync("fiscal"));
+        Assert.False(await store.DeleteDomainAsync("fiscal")); // already gone
+        Assert.DoesNotContain(await store.ListDomainsAsync(), d => d.Name == "fiscal");
     }
 
     // --- FR-01: delete by source ---------------------------------------------
@@ -880,6 +933,108 @@ public class RagKitTests
         var scoped = await rag.ListDocumentsAsync("otros");
         Assert.Single(scoped);
         Assert.Equal("gen.txt", scoped[0].Source);
+    }
+
+    // --- FR-09: whole-domain deletion ------------------------------------------
+
+    [Fact]
+    public async Task RemoveDomainAsync_wipes_the_domain_and_every_document_in_it()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("payroll");
+        await rag.DefineDomainAsync("fincas");
+
+        await rag.IngestAsync("nómina de enero", "n1.txt", domain: "payroll");
+        await rag.IngestAsync("nómina de febrero", "n2.txt", domain: "payroll");
+        await rag.IngestAsync("nómina de marzo", "n3.txt", domain: "payroll");
+        await rag.IngestAsync("contrato de alquiler", "alquiler.txt", domain: "fincas");
+
+        var removed = await rag.RemoveDomainAsync("payroll");
+        Assert.Equal(3, removed); // one chunk per document in this test
+
+        Assert.DoesNotContain(await rag.ListDomainsAsync(), d => d.Name == "payroll");
+        Assert.Empty(await rag.ListDocumentsAsync("payroll"));
+
+        // The other domain is untouched.
+        Assert.Contains(await rag.ListDomainsAsync(), d => d.Name == "fincas");
+        Assert.Single(await rag.ListDocumentsAsync("fincas"));
+        Assert.Equal(1, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task DeleteDomainAsync_and_DeleteByDomainAsync_are_independent_operations()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-domaindel-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        var emb = new LocalEmbedder();
+        await store.InitializeAsync(emb.ModelId, emb.Dimension);
+
+        await store.CreateDomainAsync("payroll", "nóminas");
+        await store.AddChunkAsync("n1.txt", "contenido", "payroll", Array.Empty<string>(), await emb.EmbedAsync("contenido"));
+
+        // Deleting the domain definition alone doesn't touch its chunks.
+        Assert.True(await store.DeleteDomainAsync("payroll"));
+        Assert.False(await store.DeleteDomainAsync("payroll")); // already gone
+        Assert.Equal(1, await store.CountAsync());
+
+        // DeleteByDomainAsync alone removes the chunks regardless of whether the domain still exists.
+        Assert.Equal(1, await store.DeleteByDomainAsync("payroll"));
+        Assert.Equal(0, await store.CountAsync());
+    }
+
+    // --- FR-10: chunk ids + paginated per-document listing ---------------------
+
+    [Fact]
+    public async Task ListChunksAsync_pages_through_every_chunk_of_a_document_without_duplicates()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        // Force the chunker to produce more chunks than the page size below (default
+        // chunk size 1000 / overlap 200 -> needs several thousand characters).
+        var longText = string.Join(" ", Enumerable.Range(0, 120)
+            .Select(i => $"Frase número {i} sobre el contrato laboral indefinido y sus condiciones."));
+        var ingested = await rag.IngestAsync(longText, "laboral.txt", domain: "docs");
+        Assert.True(ingested.ChunkCount >= 5, "el texto debería trocearse en al menos 5 chunks para que la paginación tenga sentido");
+
+        var seen = new List<string>();
+        string? cursor = null;
+        do
+        {
+            var page = await rag.ListChunksAsync("laboral.txt", domain: "docs", take: 2, cursor: cursor);
+            Assert.True(page.Items.Count <= 2);
+            foreach (var item in page.Items)
+            {
+                Assert.False(string.IsNullOrEmpty(item.Id));      // every id present
+                Assert.DoesNotContain(item.Id, seen);              // no duplicates across pages
+                seen.Add(item.Id);
+            }
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+
+        Assert.Equal(ingested.ChunkCount, seen.Count);              // every chunk visited exactly once
+        Assert.Equal(seen.Count, seen.Distinct().Count());          // ids are all distinct
+    }
+
+    [Fact]
+    public async Task ListChunksAsync_scopes_by_domain_and_returns_null_cursor_when_exhausted()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("payroll");
+        await rag.DefineDomainAsync("fincas");
+
+        // Same filename, two domains (regression-adjacent to FR-08's cross-domain concern).
+        await rag.IngestAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
+        await rag.IngestAsync("contenido de fincas, bien distinto", "contrato.txt", domain: "fincas");
+
+        var payrollPage = await rag.ListChunksAsync("contrato.txt", domain: "payroll", take: 100);
+        Assert.Single(payrollPage.Items);
+        Assert.Null(payrollPage.NextCursor); // fully exhausted in one page
+        Assert.Equal("payroll", payrollPage.Items[0].Domain);
+
+        var fincasPage = await rag.ListChunksAsync("contrato.txt", domain: "fincas", take: 100);
+        Assert.Single(fincasPage.Items);
+        Assert.NotEqual(payrollPage.Items[0].Id, fincasPage.Items[0].Id); // distinct chunks, distinct ids
     }
 
     // --- FR-03: idempotent ingestion by content hash -------------------------
