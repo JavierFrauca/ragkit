@@ -4,6 +4,23 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.6.2] - 2026-07-04
+
+### Corregido
+- **`QdrantVectorStore.EnumerateAsync` truncaba silenciosamente colecciones
+  grandes** — hacía un único scroll con `limit=10000` sin seguir
+  `next_page_offset`, así que `ListDocumentsAsync` (que depende del DIM por
+  defecto de `IVectorStore` sobre `EnumerateAsync`) subestimaba documentos y
+  chunks en colecciones con más de 10000 puntos, sin ningún error. Ahora
+  sigue el cursor de scroll nativo de Qdrant hasta agotarlo, igual que ya
+  hacía `ListChunksAsync`.
+- Documentado en el XML doc de `IVectorStore.AddChunksAsync`/
+  `ListDocumentsAsync`/`ListChunksAsync` que sus implementaciones por
+  defecto son *fallbacks* correctos pero no necesariamente eficientes ni
+  completos a escala — un `IVectorStore` de terceros que no las
+  sobrescriba compila sin ningún aviso del compilador.
+  ([#27](https://github.com/JavierFrauca/ragkit/issues/27))
+
 ## [0.6.1] - 2026-07-04
 
 ### Corregido

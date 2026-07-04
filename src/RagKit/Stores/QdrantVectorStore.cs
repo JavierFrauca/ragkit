@@ -167,21 +167,32 @@ public sealed class QdrantVectorStore : IVectorStore
 
     public async Task<IReadOnlyList<StoredChunk>> EnumerateAsync(CancellationToken ct = default)
     {
-        // Single large scroll (enough for typical corpora; paginate for very large ones).
-        using var resp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/scroll",
-            new { limit = 10000, with_payload = true }, ct).ConfigureAwait(false);
-        var json = await ReadAsync(resp, ct).ConfigureAwait(false);
+        // Follows next_page_offset until Qdrant reports none left, so collections
+        // bigger than one page (unlike a single capped scroll) are still returned whole.
         var outList = new List<StoredChunk>();
-        foreach (var p in json.RootElement.GetProperty("result").GetProperty("points").EnumerateArray())
+        string? cursor = null;
+        do
         {
-            var pay = p.GetProperty("payload");
-            var labels = pay.TryGetProperty("labels", out var la) && la.ValueKind == JsonValueKind.Array
-                ? la.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
-                : new List<string>();
-            outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
-                pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labels, ParseIngestedAt(pay), IdOf(p)));
-        }
+            object body = cursor is null
+                ? new { limit = 10000, with_payload = true }
+                : new { limit = 10000, with_payload = true, offset = cursor };
+            using var resp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/scroll", body, ct).ConfigureAwait(false);
+            var json = await ReadAsync(resp, ct).ConfigureAwait(false);
+            var result = json.RootElement.GetProperty("result");
+            foreach (var p in result.GetProperty("points").EnumerateArray())
+            {
+                var pay = p.GetProperty("payload");
+                var labels = pay.TryGetProperty("labels", out var la) && la.ValueKind == JsonValueKind.Array
+                    ? la.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
+                    : new List<string>();
+                outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
+                    pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
+                    labels, ParseIngestedAt(pay), IdOf(p)));
+            }
+            cursor = result.TryGetProperty("next_page_offset", out var npo) && npo.ValueKind != JsonValueKind.Null
+                ? (npo.ValueKind == JsonValueKind.String ? npo.GetString() : npo.GetRawText())
+                : null;
+        } while (cursor is not null);
         return outList;
     }
 

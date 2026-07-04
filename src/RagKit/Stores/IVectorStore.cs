@@ -79,6 +79,12 @@ public interface IVectorStore
     /// Index many chunks at once. The default loops over <see cref="AddChunkAsync"/>;
     /// backends override it to write the whole batch in a single round-trip.
     /// </summary>
+    /// <remarks>
+    /// This is a correctness-preserving fallback, not a performance guarantee: a new
+    /// <see cref="IVectorStore"/> implementation compiles fine without overriding it,
+    /// but pays one round-trip per chunk. Override it for any backend expected to
+    /// ingest at production volume.
+    /// </remarks>
     async Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
     {
         foreach (var c in chunks)
@@ -121,6 +127,13 @@ public interface IVectorStore
     /// groups the result of <see cref="EnumerateAsync"/> in-process; backends may
     /// override it to aggregate server-side instead.
     /// </summary>
+    /// <remarks>
+    /// This inherits whatever completeness and performance characteristics the
+    /// backend's own <see cref="EnumerateAsync"/> has — if that implementation caps
+    /// or paginates incompletely for very large collections, so does this. A new
+    /// <see cref="IVectorStore"/> implementation compiles fine without overriding
+    /// this method, so review it for backends expected to hold large collections.
+    /// </remarks>
     async Task<IReadOnlyList<DocumentInfo>> ListDocumentsAsync(string? domain = null, CancellationToken ct = default)
     {
         var chunks = await EnumerateAsync(ct).ConfigureAwait(false);
@@ -140,6 +153,12 @@ public interface IVectorStore
     /// pages over it in-process (an integer offset as the cursor) — backends override
     /// it with native/keyset pagination instead of loading the whole collection.
     /// </summary>
+    /// <remarks>
+    /// A new <see cref="IVectorStore"/> implementation compiles fine without
+    /// overriding this method, but every call loads the entire collection via
+    /// <see cref="EnumerateAsync"/> to page over it in-process — override it with
+    /// native pagination for any backend expected to hold a large collection.
+    /// </remarks>
     async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
     {
         var all = (await EnumerateAsync(ct).ConfigureAwait(false))

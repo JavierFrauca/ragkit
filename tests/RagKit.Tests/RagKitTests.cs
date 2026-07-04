@@ -93,6 +93,29 @@ sealed class SseHandler(string body) : System.Net.Http.HttpMessageHandler
         });
 }
 
+/// <summary>A fake Qdrant `points/scroll` endpoint that splits its points across two
+/// pages, so a caller's cursor-following loop can be tested without a real Qdrant
+/// instance or a real collection with more than one page of points.</summary>
+sealed class QdrantScrollPagingHandler : System.Net.Http.HttpMessageHandler
+{
+    public int Calls { get; private set; }
+
+    protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(
+        System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Calls++;
+        var requestBody = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var isSecondPage = requestBody.Contains("\"offset\"");
+        var json = isSecondPage
+            ? """{"result":{"points":[{"id":"p2","payload":{"source":"b.txt","text":"pagina dos","labels":[],"ingestedAtUtc":"2026-01-01T00:00:00Z"}}],"next_page_offset":null}}"""
+            : """{"result":{"points":[{"id":"p1","payload":{"source":"a.txt","text":"pagina uno","labels":[],"ingestedAtUtc":"2026-01-01T00:00:00Z"}}],"next_page_offset":"cursor-1"}}""";
+        return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent(json)
+        };
+    }
+}
+
 /// <summary>A reranker that moves a given source to the front.</summary>
 sealed class FrontReranker(string front) : IReranker
 {
@@ -921,6 +944,28 @@ public class RagKitTests
 
         Assert.Single(hits);
         Assert.Equal("target.txt", hits[0].Source);
+    }
+
+    [Fact]
+    public async Task Qdrant_EnumerateAsync_follows_next_page_offset_across_pages()
+    {
+        // Regression: EnumerateAsync used to issue a single scroll and stop, silently
+        // truncating any collection whose points didn't fit in one page. This test
+        // simulates a two-page collection via a fake handler (no real Qdrant needed)
+        // and verifies EnumerateAsync (and ListDocumentsAsync's default DIM built on
+        // top of it) return every page's points, not just the first.
+        var handler = new QdrantScrollPagingHandler();
+        var http = new HttpClient(handler);
+        IVectorStore store = new QdrantVectorStore("http://127.0.0.1:6333", "ragkit_paging_test", http: http);
+
+        var all = await store.EnumerateAsync();
+        Assert.Equal(2, handler.Calls); // followed the cursor instead of stopping after page 1
+        Assert.Equal(2, all.Count);
+        Assert.Contains(all, c => c.Source == "a.txt");
+        Assert.Contains(all, c => c.Source == "b.txt");
+
+        var docs = await store.ListDocumentsAsync();
+        Assert.Equal(2, docs.Count);
     }
 
     [Fact]
