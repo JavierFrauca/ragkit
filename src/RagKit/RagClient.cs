@@ -293,7 +293,7 @@ public sealed class RagClient
         // Keep the lexical index in sync only once it's been loaded; otherwise the
         // first retrieval will enumerate these chunks from the store anyway.
         if (_options.Hybrid && Volatile.Read(ref _lexicalLoaded))
-            foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels));
+            foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels, c.IngestedAtUtc));
 
         return new IngestResult(source, domain, labelArr, chunks.Count, Confidence: confidence);
     }
@@ -892,7 +892,7 @@ public sealed class RagClient
             var c = lexical[i].Chunk;
             var key = Key(c.Source, c.Text);
             scores[key] = scores.GetValueOrDefault(key) + 1.0 / (rrfK + i + 1);
-            rep.TryAdd(key, new StoredHit(c.Source, c.Text, c.Domain, c.Labels, 0));
+            rep.TryAdd(key, new StoredHit(c.Source, c.Text, c.Domain, c.Labels, 0, c.Id));
         }
         return scores.OrderByDescending(kv => kv.Value)
             .Select(kv => rep[kv.Key] with { Score = kv.Value })
