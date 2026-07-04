@@ -416,18 +416,18 @@ public sealed class RagClient
     /// guardrail with <see cref="GuardrailRule.Domain"/> set (any <see
     /// cref="GuardrailRule.Profile"/>) only ever applied within it, so once the domain is
     /// gone neither means anything — worse, leaving them would let a later domain with the
-    /// same name silently reactivate them. Returns how many chunks were removed. Also drops
-    /// those chunks from the in-memory hybrid (lexical) index, if it's been loaded, so stale
-    /// hits don't keep surfacing. Labels are untouched (they aren't domain-scoped).
+    /// same name silently reactivate them. Also drops those chunks from the in-memory
+    /// hybrid (lexical) index, if it's been loaded, so stale hits don't keep surfacing.
+    /// Labels are untouched (they aren't domain-scoped).
     /// </summary>
-    public async Task<int> RemoveDomainAsync(string name, CancellationToken ct = default)
+    public async Task<DomainRemovalResult> RemoveDomainAsync(string name, CancellationToken ct = default)
     {
         var removed = await _store.DeleteByDomainAsync(name, ct).ConfigureAwait(false);
-        await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
+        var existed = await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
         if (removed > 0 && _options.Hybrid && Volatile.Read(ref _lexicalLoaded))
             _lexical.RemoveByDomain(name);
         await RemoveDomainConfigAsync(name, ct).ConfigureAwait(false);
-        return removed;
+        return new DomainRemovalResult(existed, removed);
     }
 
     /// <summary>Drop every profile and guardrail scoped to <paramref name="domain"/> — the
