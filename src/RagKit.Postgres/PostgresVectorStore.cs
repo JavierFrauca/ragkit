@@ -147,6 +147,38 @@ public sealed class PostgresVectorStore : IVectorStore
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // Batched to keep parameter counts sane (7 params/row) even for a very large single
+    // ingest; Postgres' own limit is much higher (65535) but there's no benefit to a single
+    // giant statement over a handful of round-trips.
+    private const int BatchRows = 200;
+
+    /// <summary>Write the whole batch as one or more multi-row <c>INSERT</c>s (one round-trip
+    /// per <see cref="BatchRows"/> chunks) instead of the default per-chunk loop.</summary>
+    public async Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
+    {
+        if (chunks.Count == 0) return;
+        for (int start = 0; start < chunks.Count; start += BatchRows)
+        {
+            var batch = chunks.Skip(start).Take(BatchRows).ToList();
+            var values = new List<string>(batch.Count);
+            await using var cmd = _ds.CreateCommand();
+            for (int i = 0; i < batch.Count; i++)
+            {
+                var c = batch[i];
+                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},@emb{i}::vector,@ing{i})");
+                cmd.Parameters.AddWithValue($"id{i}", Guid.NewGuid());
+                cmd.Parameters.AddWithValue($"s{i}", c.Source);
+                cmd.Parameters.AddWithValue($"b{i}", c.Text);
+                cmd.Parameters.AddWithValue($"dom{i}", (object?)c.Domain ?? DBNull.Value);
+                cmd.Parameters.AddWithValue($"lbl{i}", c.Labels.ToArray());
+                cmd.Parameters.AddWithValue($"emb{i}", Literal(c.Vector));
+                cmd.Parameters.AddWithValue($"ing{i}", c.IngestedAtUtc == default ? (object)DBNull.Value : c.IngestedAtUtc);
+            }
+            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES {string.Join(",", values)}";
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
     public async Task<IReadOnlyList<StoredHit>> SearchAsync(float[] query, int k, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
     {
         var req = labels?.ToArray() ?? Array.Empty<string>();

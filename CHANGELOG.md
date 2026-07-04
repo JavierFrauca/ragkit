@@ -4,6 +4,28 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.3.1] - 2026-07-04
+
+Dos correcciones detectadas en una auditoría de paridad entre los 4 backends.
+Issues [#15](https://github.com/JavierFrauca/ragkit/issues/15)/[#16](https://github.com/JavierFrauca/ragkit/issues/16).
+
+### Corregido
+- **Perf**: `AddChunksAsync` no hacía batch real en Qdrant/SQL Server/Postgres —
+  caían en el bucle por defecto de la interfaz, con una petición HTTP (Qdrant) o
+  una conexión/comando separado (SQL Server/Postgres) **por cada chunk**. Ahora
+  los 3 escriben el lote completo en una sola llamada (Qdrant: un `PUT` con
+  varios puntos; SQL Server/Postgres: un `INSERT` multi-fila sobre una única
+  conexión, troceado de 200 en 200 filas para no agotar el límite de
+  parámetros). Solo `InMemoryVectorStore` ya lo hacía bien. (#15)
+- **Bug**: `SqlServerVectorStore.SearchAsync` filtraba las `labels` requeridas
+  sobre-pidiendo `k*5` candidatos por similitud vectorial y descartando en
+  proceso los que no las tenían — si más de `k*5` chunks sin la etiqueta
+  superaban en similitud al único chunk que sí la tenía, la búsqueda podía
+  devolver menos resultados de los que existían, o ninguno. Ahora el filtro
+  "contiene todas las etiquetas" se aplica en la propia consulta SQL (vía
+  `OPENJSON`, doble `NOT EXISTS`), así que `TOP(@k)` ya ve solo los candidatos
+  válidos. Qdrant, Postgres e InMemory ya eran exactos. (#16)
+
 ## [0.3.0] - 2026-07-03
 
 Borrado de dominio completo e ids de chunk con listado paginado por documento.
