@@ -1063,6 +1063,33 @@ public class RagKitTests
     }
 
     [Fact]
+    public async Task RemoveDomainAsync_cascades_to_profiles_and_guardrails_scoped_to_that_domain()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("payroll");
+        await rag.DefineDomainAsync("fincas");
+
+        // Profile + domain-scoped guardrail on the domain being removed.
+        await rag.DefineProfileAsync(new ProfileInfo("gestor", "payroll", Prompt: "Eres gestor de nóminas."));
+        await rag.DefineGuardrailAsync(new GuardrailRule("No reveles el salario de otros empleados", GuardrailStage.Output, "payroll"));
+        // Survivors: a profile/guardrail on the other domain, and a global guardrail.
+        await rag.DefineProfileAsync(new ProfileInfo("notario", "fincas"));
+        await rag.DefineGuardrailAsync(new GuardrailRule("No reveles datos de terceros", GuardrailStage.Output, "fincas"));
+        await rag.DefineGuardrailAsync(new GuardrailRule("Rechaza peticiones ilegales")); // global: Domain == null
+
+        await rag.RemoveDomainAsync("payroll");
+
+        var profiles = await rag.ListProfilesAsync();
+        Assert.DoesNotContain(profiles, p => p.Domain == "payroll");
+        Assert.Contains(profiles, p => p.Domain == "fincas" && p.Name == "notario");
+
+        var guardrails = await rag.ListGuardrailsAsync();
+        Assert.DoesNotContain(guardrails, r => r.Domain == "payroll");
+        Assert.Contains(guardrails, r => r.Domain == "fincas");
+        Assert.Contains(guardrails, r => r.Domain is null); // global guardrail survives
+    }
+
+    [Fact]
     public async Task DeleteDomainAsync_and_DeleteByDomainAsync_are_independent_operations()
     {
         var dir = Path.Combine(Path.GetTempPath(), "ragkit-domaindel-" + Guid.NewGuid().ToString("N"));
