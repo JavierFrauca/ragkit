@@ -277,7 +277,7 @@ await rag.DeleteCatalogEntryAsync("app-config", "feature-flags");
 que no implemente el catálogo (p. ej. uno propio de terceros) simplemente no persiste
 nada (no-op), sin romper el contrato.
 
-## Panel de mantenimiento (`RagKit.Dashboard`, en desarrollo)
+## Panel de mantenimiento (`RagKit.Dashboard`)
 Paquete opt-in con un panel mínimo de administración (al estilo del dashboard de
 Qdrant o el de Hangfire) sobre la API pública de `RagClient`. Se monta con una línea:
 ```csharp
@@ -288,9 +288,10 @@ app.MapRagDashboard(path: "/rag-admin").RequireAuthorization("AdminOnly");
 **Sin autenticación propia por defecto** — `MapRagDashboard` devuelve un
 `IEndpointConventionBuilder` para que cuelgues tu propio esquema de auth de ASP.NET
 Core; no lo expongas público sin ello. Solo target `net10.0` (acoplado a ASP.NET
-Core). Ya trae CRUD completo de **dominios, etiquetas, documentos, chunks
-paginados, guardarails, perfiles y prompts**; la ingesta con progreso y el
-playground de preguntas llegan en próximas versiones — ver
+Core). Trae CRUD completo de **dominios, etiquetas, documentos, chunks
+paginados, guardarails, perfiles y prompts**, **ingesta con seguimiento de
+progreso** (vía Server-Sent Events) y un **playground de preguntas**
+(`AskAsync`/`AskStreamAsync`, citas antes que los tokens) — ver
 [`src/RagKit.Dashboard/README.md`](src/RagKit.Dashboard/README.md).
 
 ## Estado y roadmap
@@ -303,10 +304,10 @@ playground de preguntas llegan en próximas versiones — ver
 - ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), borrado de dominio completo (`RemoveDomainAsync`), inventario agregado (`ListDocumentsAsync`), listado paginado de chunks por documento con id (`ListChunksAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
 - ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
-
-**En desarrollo:** `RagKit.Dashboard` — panel de mantenimiento opt-in (montaje,
-auth hook y CRUD completo ya disponibles; ingesta con progreso y playground de
-preguntas en próximos milestones).
+- ✅ **`RagKit.Dashboard`** — panel de mantenimiento opt-in: montaje, auth hook,
+  CRUD completo, ingesta con seguimiento de progreso (SSE) y playground de
+  preguntas (`AskAsync`/`AskStreamAsync`, SSE). Pendiente: empaquetado/CI
+  ampliada y una suite de tests más exhaustiva (Milestones 5-6).
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -342,5 +343,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 66 tests del core (net8.0 y net10.0) + 15 de RagKit.Dashboard (net10.0), sin red
+dotnet test   # 72 tests del core (net8.0 y net10.0) + 21 de RagKit.Dashboard (net10.0), sin red
 ```

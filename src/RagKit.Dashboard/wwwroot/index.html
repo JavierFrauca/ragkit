@@ -122,6 +122,18 @@
     <table id="table-domain-prompts"><thead><tr><th>Dominio</th><th>Prompt</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
+  <section>
+    <h2>Playground</h2>
+    <form class="inline" id="form-ask">
+      <input name="question" placeholder="pregunta" required style="flex:1" />
+      <input name="domain" placeholder="dominio (opcional)" />
+      <input name="profile" placeholder="perfil (opcional)" />
+      <button type="submit">Preguntar (streaming)</button>
+    </form>
+    <div id="ask-citations"></div>
+    <div id="ask-answer" class="chunk"></div>
+  </section>
+
   <script src="app.js"></script>
 </body>
 </html>

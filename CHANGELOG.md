@@ -4,6 +4,18 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.7.3] - 2026-07-04
+
+### Añadido
+- **`RagKit.Dashboard`: playground de preguntas (Milestone 4)** —
+  `POST api/ask {question, domain?, profile?}` para una respuesta rápida sin
+  streaming (`AskAsync`); `GET api/ask/stream?question=&domain=&profile=`
+  vía Server-Sent Events sobre `AskStreamAsync`, con las citas como primer
+  evento (antes de cualquier token) y un evento final de cierre. Nueva
+  sección "Playground" en la UI, verificada manualmente en navegador con un
+  LLM de prueba (respuesta en streaming + citas mostradas correctamente).
+  ([#37](https://github.com/JavierFrauca/ragkit/issues/37))
+
 ## [0.7.2] - 2026-07-04
 
 ### Añadido

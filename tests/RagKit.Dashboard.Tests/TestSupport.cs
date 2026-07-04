@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Builder;
+﻿using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,4 +38,14 @@ static class TestSupport
         await app.StartAsync();
         return (app, app.GetTestClient());
     }
+
+    /// <summary>Parses a fully-buffered SSE response body (the stream must have
+    /// already ended — no use for a genuinely long-lived connection) into the JSON
+    /// payload of each "data:" line, in order.</summary>
+    public static IReadOnlyList<JsonElement> ParseSseEvents(string body) =>
+        body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
+            .Select(block => block.Split('\n').FirstOrDefault(l => l.StartsWith("data: ")))
+            .Where(dataLine => dataLine is not null)
+            .Select(dataLine => JsonSerializer.Deserialize<JsonElement>(dataLine!["data: ".Length..]))
+            .ToList();
 }

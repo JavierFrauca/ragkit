@@ -269,6 +269,35 @@ document.getElementById("form-domain-prompt").addEventListener("submit", async (
   await loadPrompts();
 });
 
+// --- playground (Ask/AskStream) -------------------------------------------------
+
+document.getElementById("form-ask").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const { question, domain, profile } = formData(e.target);
+
+  const citationsEl = document.getElementById("ask-citations");
+  const answerEl = document.getElementById("ask-answer");
+  citationsEl.innerHTML = "";
+  answerEl.textContent = "";
+
+  const qs = new URLSearchParams({ question, ...(domain ? { domain } : {}), ...(profile ? { profile } : {}) });
+  const source = new EventSource(`api/ask/stream?${qs}`);
+  source.addEventListener("ask", (ev) => {
+    const payload = JSON.parse(ev.data);
+    if (payload.citations) {
+      payload.citations.forEach((c) => citationsEl.append(el("div", { class: "muted" }, `📎 ${c.source} — ${truncate(c.snippet)}`)));
+      return;
+    }
+    if (payload.done) { source.close(); return; }
+    answerEl.textContent += payload.token; // tokens arrive already in reading order
+  });
+  source.onerror = () => source.close();
+});
+
+function truncate(text) {
+  return text.length > 120 ? text.slice(0, 120) + "…" : text;
+}
+
 // --- initial load ----------------------------------------------------------------
 
 Promise.all([loadStats(), loadDomains(), loadLabels(), loadDocuments(), loadGuardrails(), loadProfiles(), loadPrompts()])
