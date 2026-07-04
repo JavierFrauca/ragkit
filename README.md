@@ -237,7 +237,9 @@ var r = await rag.IngestFileIfChangedAsync("iva.txt", domain: "fiscal");
 await foreach (var res in rag.IngestFolderAsync("./docs", domain: "fiscal", recursive: true))
     Console.WriteLine($"{res.Source}: {res.Outcome}");
 
-// Borrado de un dominio completo: sus chunks + la propia definición del dominio.
+// Borrado de un dominio completo: sus chunks, la propia definición del dominio,
+// y en cascada los perfiles/guardarailes que solo aplicaban a ese dominio
+// (los globales y los de otros dominios no se tocan).
 int borradosDominio = await rag.RemoveDomainAsync("fiscal");
 
 // Listado paginado de los chunks de un documento (no carga la colección entera).
@@ -306,5 +308,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 63 tests, sin red (net8.0 y net10.0)
+dotnet test   # 64 tests, sin red (net8.0 y net10.0)
 ```

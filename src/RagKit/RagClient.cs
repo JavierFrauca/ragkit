@@ -357,12 +357,15 @@ public sealed class RagClient
 
     /// <summary>
     /// Remove an entire domain: every chunk indexed under it (<see
-    /// cref="IVectorStore.DeleteByDomainAsync"/>) plus the domain definition itself
-    /// (<see cref="IVectorStore.DeleteDomainAsync"/>). Returns how many chunks were
-    /// removed. Also drops those entries from the in-memory hybrid (lexical) index, if
-    /// it's been loaded, so stale hits don't keep surfacing. Labels and any
-    /// profiles/guardrails scoped to the domain are untouched — remove them separately
-    /// if needed.
+    /// cref="IVectorStore.DeleteByDomainAsync"/>), the domain definition itself (<see
+    /// cref="IVectorStore.DeleteDomainAsync"/>), and every profile/guardrail scoped to
+    /// it — a profile's <see cref="ProfileInfo.Domain"/> always names a domain, and a
+    /// guardrail with <see cref="GuardrailRule.Domain"/> set (any <see
+    /// cref="GuardrailRule.Profile"/>) only ever applied within it, so once the domain is
+    /// gone neither means anything — worse, leaving them would let a later domain with the
+    /// same name silently reactivate them. Returns how many chunks were removed. Also drops
+    /// those chunks from the in-memory hybrid (lexical) index, if it's been loaded, so stale
+    /// hits don't keep surfacing. Labels are untouched (they aren't domain-scoped).
     /// </summary>
     public async Task<int> RemoveDomainAsync(string name, CancellationToken ct = default)
     {
@@ -370,7 +373,32 @@ public sealed class RagClient
         await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
         if (removed > 0 && _options.Hybrid && Volatile.Read(ref _lexicalLoaded))
             _lexical.RemoveByDomain(name);
+        await RemoveDomainConfigAsync(name, ct).ConfigureAwait(false);
         return removed;
+    }
+
+    /// <summary>Drop every profile and guardrail scoped to <paramref name="domain"/> — the
+    /// config-cleanup half of <see cref="RemoveDomainAsync"/>.</summary>
+    private async Task RemoveDomainConfigAsync(string domain, CancellationToken ct)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var profiles = _profiles.Where(p => !string.Equals(p.Domain, domain, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (profiles.Count != _profiles.Count)
+            {
+                await _store.SaveProfilesAsync(profiles, ct).ConfigureAwait(false);
+                _profiles = profiles;
+            }
+
+            var guardrails = _guardrails.Where(r => !string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (guardrails.Count != _guardrails.Count)
+            {
+                await _store.SaveGuardrailsAsync(guardrails, ct).ConfigureAwait(false);
+                _guardrails = guardrails;
+            }
+        }
+        finally { _configGate.Release(); }
     }
 
     /// <summary>List ingested documents (one entry per distinct source), optionally

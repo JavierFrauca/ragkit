@@ -4,6 +4,18 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.3.2] - 2026-07-04
+
+### Cambiado
+- **`RemoveDomainAsync` ahora borra en cascada** los perfiles (`ProfileInfo`)
+  y guardarailes (`GuardrailRule`) con `Domain` igual al dominio eliminado
+  (cualquier `Profile`). Antes quedaban huérfanos — y peor, se reactivaban
+  silenciosamente si más tarde se recreaba un dominio con el mismo nombre,
+  ya que `ApplicableRules` solo compara por igualdad de nombre. Los
+  guardarailes globales (`Domain == null`) y la configuración de otros
+  dominios no se ven afectados. Comportamiento por defecto, sin flag
+  opt-in. ([#18](https://github.com/JavierFrauca/ragkit/issues/18))
+
 ## [0.3.1] - 2026-07-04
 
 Dos correcciones detectadas en una auditoría de paridad entre los 4 backends.
