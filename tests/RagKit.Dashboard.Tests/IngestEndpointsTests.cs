@@ -6,13 +6,6 @@ namespace RagKit.Dashboard.Tests;
 
 public class IngestEndpointsTests
 {
-    private static IReadOnlyList<JsonElement> ParseSseEvents(string body) =>
-        body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
-            .Select(block => block.Split('\n').FirstOrDefault(l => l.StartsWith("data: ")))
-            .Where(dataLine => dataLine is not null)
-            .Select(dataLine => JsonSerializer.Deserialize<JsonElement>(dataLine!["data: ".Length..]))
-            .ToList();
-
     [Fact]
     public async Task Ingest_streams_one_event_per_file_then_a_final_completed_event()
     {
@@ -32,7 +25,7 @@ public class IngestEndpointsTests
 
         var stream = await client.GetAsync($"/rag-admin/api/ingest/{runId}/stream");
         Assert.Equal(HttpStatusCode.OK, stream.StatusCode);
-        var events = ParseSseEvents(await stream.Content.ReadAsStringAsync());
+        var events = TestSupport.ParseSseEvents(await stream.Content.ReadAsStringAsync());
 
         var resultEvents = events.Where(e => e.TryGetProperty("result", out var ignored)).ToList();
         Assert.Equal(2, resultEvents.Count);

@@ -26,8 +26,10 @@ app.MapRagDashboard(path: "/rag-admin");
   tiempo real vía Server-Sent Events, sin polling. Solo rutas de servidor —
   no hay subida de ficheros desde el navegador. El estado de cada ingesta es
   en memoria y se pierde al reiniciar el proceso.
-
-**En desarrollo**: un playground de preguntas (`AskAsync`/`AskStreamAsync`).
+- **Playground de preguntas**: pregunta directamente desde el panel —
+  `AskAsync` para una respuesta rápida sin streaming, o el propio playground
+  de la UI, que usa `AskStreamAsync` vía Server-Sent Events y muestra las
+  citas antes de que empiece a llegar la respuesta.
 
 ## ⚠️ Seguridad
 

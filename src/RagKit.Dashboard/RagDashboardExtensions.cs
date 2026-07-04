@@ -45,6 +45,7 @@ public static class RagDashboardExtensions
         ProfileEndpoints.Map(group);
         PromptEndpoints.Map(group);
         IngestEndpoints.Map(group);
+        AskEndpoints.Map(group);
 
         // Static assets (index.html, css, js…), embedded in the assembly — no
         // frontend build step for the consumer. A single catch-all handles both
