@@ -288,9 +288,9 @@ app.MapRagDashboard(path: "/rag-admin").RequireAuthorization("AdminOnly");
 **Sin autenticación propia por defecto** — `MapRagDashboard` devuelve un
 `IEndpointConventionBuilder` para que cuelgues tu propio esquema de auth de ASP.NET
 Core; no lo expongas público sin ello. Solo target `net10.0` (acoplado a ASP.NET
-Core). Por ahora trae el montaje + un endpoint de estado; el CRUD completo
-(dominios/documentos/chunks/guardarails/perfiles/prompts), la ingesta con progreso y
-el playground de preguntas llegan en próximas versiones — ver
+Core). Ya trae CRUD completo de **dominios, etiquetas, documentos, chunks
+paginados, guardarails, perfiles y prompts**; la ingesta con progreso y el
+playground de preguntas llegan en próximas versiones — ver
 [`src/RagKit.Dashboard/README.md`](src/RagKit.Dashboard/README.md).
 
 ## Estado y roadmap
@@ -304,9 +304,9 @@ el playground de preguntas llegan en próximas versiones — ver
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
 - ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
 
-**En desarrollo:** `RagKit.Dashboard` — panel de mantenimiento opt-in (esqueleto
-+ montaje + auth hook ya disponibles; CRUD completo, ingesta con progreso y
-playground de preguntas en próximos milestones).
+**En desarrollo:** `RagKit.Dashboard` — panel de mantenimiento opt-in (montaje,
+auth hook y CRUD completo ya disponibles; ingesta con progreso y playground de
+preguntas en próximos milestones).
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -342,5 +342,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 66 tests del core (net8.0 y net10.0) + 5 de RagKit.Dashboard (net10.0), sin red
+dotnet test   # 66 tests del core (net8.0 y net10.0) + 15 de RagKit.Dashboard (net10.0), sin red
 ```
