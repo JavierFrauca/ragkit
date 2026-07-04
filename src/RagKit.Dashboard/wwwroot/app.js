@@ -147,6 +147,7 @@ async function loadGuardrails() {
       el("td", {}, el("button", {
         class: "danger",
         onclick: async () => {
+          if (!confirm(`Borrar el guardarail "${r.description}"?`)) return;
           await fetch("api/guardrails", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
@@ -180,6 +181,7 @@ async function loadProfiles() {
       el("td", {}, el("button", {
         class: "danger",
         onclick: async () => {
+          if (!confirm(`Borrar el perfil "${p.name}"?`)) return;
           await api("DELETE", `api/profiles/${encodeURIComponent(p.domain)}/${encodeURIComponent(p.name)}`);
           await loadProfiles();
         },
