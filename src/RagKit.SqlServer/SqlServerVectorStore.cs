@@ -167,21 +167,66 @@ public sealed class SqlServerVectorStore : IVectorStore
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // SQL Server caps parameters per statement at 2100; 7 params/row keeps well under that
+    // even for a pathologically large single ingest, while still writing everything over
+    // one connection instead of one connection per chunk.
+    private const int BatchRows = 200;
+
+    /// <summary>Write the whole batch as one or more multi-row <c>INSERT</c>s over a single
+    /// connection (one round-trip per <see cref="BatchRows"/> chunks) instead of the default
+    /// per-chunk loop, which opened a new connection for every single chunk.</summary>
+    public async Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
+    {
+        if (chunks.Count == 0) return;
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        for (int start = 0; start < chunks.Count; start += BatchRows)
+        {
+            var batch = chunks.Skip(start).Take(BatchRows).ToList();
+            var values = new List<string>(batch.Count);
+            await using var cmd = new SqlCommand { Connection = con };
+            for (int i = 0; i < batch.Count; i++)
+            {
+                var c = batch[i];
+                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},CAST(@emb{i} AS vector({_dim})),@ing{i})");
+                cmd.Parameters.AddWithValue($"@id{i}", Guid.NewGuid());
+                cmd.Parameters.AddWithValue($"@s{i}", c.Source);
+                cmd.Parameters.AddWithValue($"@b{i}", c.Text);
+                cmd.Parameters.AddWithValue($"@dom{i}", (object?)c.Domain ?? DBNull.Value);
+                cmd.Parameters.AddWithValue($"@lbl{i}", JsonSerializer.Serialize(c.Labels));
+                cmd.Parameters.AddWithValue($"@emb{i}", Literal(c.Vector));
+                cmd.Parameters.AddWithValue($"@ing{i}", c.IngestedAtUtc == default ? (object)DBNull.Value : c.IngestedAtUtc);
+            }
+            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES {string.Join(",", values)}";
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
     public async Task<IReadOnlyList<StoredHit>> SearchAsync(float[] query, int k, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
     {
         var req = labels ?? Array.Empty<string>();
-        int top = req.Count > 0 ? k * 5 : k; // over-fetch, then filter labels in-process
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        // "Contains all" is pushed into the query itself via a double-NOT-EXISTS (relational
+        // division) over OPENJSON, instead of over-fetching and filtering in process: TOP(@k)
+        // now sees only rows that already satisfy the label constraint, so it's an exact top-k
+        // rather than a best-effort one bounded by how much we happened to over-fetch.
         await using var cmd = new SqlCommand($"""
-            SELECT TOP(@top) source, body, domain, labels,
+            SELECT TOP(@k) source, body, domain, labels,
                    1 - VECTOR_DISTANCE('cosine', CAST(@q AS vector({_dim})), embedding) AS score, id
             FROM {Chunks}
             WHERE (@dom IS NULL OR domain=@dom)
+              AND (@reqJson IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM OPENJSON(@reqJson) AS want
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM OPENJSON(ISNULL(labels, '[]')) AS have
+                        WHERE have.value = want.value
+                    )
+                  ))
             ORDER BY VECTOR_DISTANCE('cosine', CAST(@q AS vector({_dim})), embedding)
             """, con);
-        cmd.Parameters.AddWithValue("@top", top);
+        cmd.Parameters.AddWithValue("@k", k);
         cmd.Parameters.AddWithValue("@q", Literal(query));
         cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@reqJson", req.Count > 0 ? JsonSerializer.Serialize(req) : (object)DBNull.Value);
 
         var hits = new List<StoredHit>();
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -189,10 +234,8 @@ public sealed class SqlServerVectorStore : IVectorStore
         {
             var labelsOut = r.IsDBNull(3) ? Array.Empty<string>()
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
-            if (req.Count > 0 && !req.All(l => labelsOut.Contains(l, StringComparer.OrdinalIgnoreCase))) continue;
             hits.Add(new StoredHit(r.GetString(0), r.GetString(1),
                 r.IsDBNull(2) ? null : r.GetString(2), labelsOut, r.GetDouble(4), r.GetGuid(5).ToString()));
-            if (hits.Count >= k) break;
         }
         return hits;
     }

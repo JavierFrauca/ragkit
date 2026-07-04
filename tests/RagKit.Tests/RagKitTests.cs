@@ -761,6 +761,28 @@ public class RagKitTests
     }
 
     [Fact]
+    public async Task Postgres_AddChunksAsync_writes_the_whole_batch_in_one_go_when_available()
+    {
+        const string cs = "Host=127.0.0.1;Port=5432;Username=postgres;Password=ragkit;Database=ragkit;Timeout=3";
+        var coll = "ragkit_test_" + Guid.NewGuid().ToString("N")[..8];
+        var store = new PostgresVectorStore(cs, coll);
+        var emb = new LocalEmbedder();
+        try { await store.InitializeAsync(emb.ModelId, emb.Dimension); }
+        catch (Exception ex) when (ex is not Xunit.Sdk.XunitException) { return; }
+
+        var chunks = new List<EmbeddedChunk>();
+        for (int i = 0; i < 7; i++)
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+
+        await store.AddChunksAsync(chunks);
+
+        var page = await store.ListChunksAsync("batch.txt", "docs", take: 100);
+        Assert.Equal(7, page.Items.Count);
+        Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count());
+        Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
+    }
+
+    [Fact]
     public async Task SqlServer_store_roundtrip_when_available()
     {
         const string cs = "Server=127.0.0.1,1433;User Id=sa;Password=Ragkit2025!Strong;Database=ragkit;TrustServerCertificate=True;Connect Timeout=5";
@@ -808,6 +830,59 @@ public class RagKitTests
         Assert.True(await store.DeleteDomainAsync("fiscal"));
         Assert.False(await store.DeleteDomainAsync("fiscal")); // already gone
         Assert.DoesNotContain(await store.ListDomainsAsync(), d => d.Name == "fiscal");
+    }
+
+    [Fact]
+    public async Task SqlServer_AddChunksAsync_writes_the_whole_batch_over_one_connection_when_available()
+    {
+        const string cs = "Server=127.0.0.1,1433;User Id=sa;Password=Ragkit2025!Strong;Database=ragkit;TrustServerCertificate=True;Connect Timeout=5";
+        var coll = "ragkit_test_" + Guid.NewGuid().ToString("N")[..8];
+        var store = new SqlServerVectorStore(cs, coll);
+        var emb = new LocalEmbedder();
+        try { await store.InitializeAsync(emb.ModelId, emb.Dimension); }
+        catch (Exception ex) when (ex is not Xunit.Sdk.XunitException) { return; }
+
+        var chunks = new List<EmbeddedChunk>();
+        for (int i = 0; i < 7; i++)
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+
+        await store.AddChunksAsync(chunks);
+
+        var page = await store.ListChunksAsync("batch.txt", "docs", take: 100);
+        Assert.Equal(7, page.Items.Count);
+        Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count()); // every id distinct
+        Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
+    }
+
+    [Fact]
+    public async Task SqlServer_label_filter_is_exact_even_when_outranked_by_unlabeled_chunks_when_available()
+    {
+        // Regression: the old implementation over-fetched TOP(k*5) by vector similarity and
+        // filtered labels afterwards in process. With k=1 that over-fetch window is 5 rows —
+        // if the one chunk carrying the requested label is vector-wise less similar to the
+        // query than 5 unrelated chunks, the old code would silently return zero hits even
+        // though a matching chunk exists.
+        const string cs = "Server=127.0.0.1,1433;User Id=sa;Password=Ragkit2025!Strong;Database=ragkit;TrustServerCertificate=True;Connect Timeout=5";
+        var coll = "ragkit_test_" + Guid.NewGuid().ToString("N")[..8];
+        var store = new SqlServerVectorStore(cs, coll);
+        var emb = new LocalEmbedder();
+        try { await store.InitializeAsync(emb.ModelId, emb.Dimension); }
+        catch (Exception ex) when (ex is not Xunit.Sdk.XunitException) { return; }
+
+        await store.CreateDomainAsync("fiscal", "impuestos");
+        var query = "impuesto sobre el valor añadido tipo general";
+        for (int i = 0; i < 5; i++)
+        {
+            var text = $"impuesto sobre el valor añadido variante {i}"; // shares vocabulary with the query -> ranks high
+            await store.AddChunkAsync($"noise{i}.txt", text, "fiscal", Array.Empty<string>(), await emb.EmbedAsync(text));
+        }
+        const string targetText = "receta de pizza con piña y queso"; // unrelated vocabulary -> ranks last
+        await store.AddChunkAsync("target.txt", targetText, "fiscal", new[] { "iva" }, await emb.EmbedAsync(targetText));
+
+        var hits = await store.SearchAsync(await emb.EmbedAsync(query), k: 1, "fiscal", new[] { "iva" });
+
+        Assert.Single(hits);
+        Assert.Equal("target.txt", hits[0].Source);
     }
 
     [Fact]
@@ -864,6 +939,32 @@ public class RagKitTests
         Assert.True(await store.DeleteDomainAsync("fiscal"));
         Assert.False(await store.DeleteDomainAsync("fiscal")); // already gone
         Assert.DoesNotContain(await store.ListDomainsAsync(), d => d.Name == "fiscal");
+    }
+
+    [Fact]
+    public async Task Qdrant_AddChunksAsync_writes_the_whole_batch_in_one_request_when_available()
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        bool up;
+        try { up = (await http.GetAsync("http://127.0.0.1:6333/readyz")).IsSuccessStatusCode; }
+        catch { up = false; }
+        if (!up) return;
+
+        var coll = "ragkit_test_" + Guid.NewGuid().ToString("N")[..8];
+        var store = new QdrantVectorStore("http://127.0.0.1:6333", coll);
+        var emb = new LocalEmbedder();
+        await store.InitializeAsync(emb.ModelId, emb.Dimension);
+
+        var chunks = new List<EmbeddedChunk>();
+        for (int i = 0; i < 7; i++)
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+
+        await store.AddChunksAsync(chunks);
+
+        var page = await store.ListChunksAsync("batch.txt", "docs", take: 100);
+        Assert.Equal(7, page.Items.Count);
+        Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count());
+        Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
     }
 
     // --- FR-01: delete by source ---------------------------------------------

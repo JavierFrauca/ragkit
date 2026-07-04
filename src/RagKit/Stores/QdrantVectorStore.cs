@@ -112,6 +112,24 @@ public sealed class QdrantVectorStore : IVectorStore
         => UpsertAsync(_chunks, Guid.NewGuid().ToString(), vector,
             new { source, text, domain, labels = labels.ToArray(), ingestedAtUtc = ingestedAtUtc.ToString("o") }, ct);
 
+    /// <summary>Write the whole batch as a single <c>PUT .../points</c> call (one round-trip)
+    /// instead of the default per-chunk loop.</summary>
+    public Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
+    {
+        if (chunks.Count == 0) return Task.CompletedTask;
+        var points = chunks.Select(c => new
+        {
+            id = Guid.NewGuid().ToString(),
+            vector = c.Vector,
+            payload = new
+            {
+                source = c.Source, text = c.Text, domain = c.Domain,
+                labels = c.Labels.ToArray(), ingestedAtUtc = c.IngestedAtUtc.ToString("o"),
+            },
+        });
+        return UpsertManyAsync(_chunks, points, ct);
+    }
+
     public async Task<IReadOnlyList<StoredHit>> SearchAsync(float[] query, int k, string? domain = null, IReadOnlyList<string>? labels = null, CancellationToken ct = default)
     {
         var must = new List<object>();
@@ -306,6 +324,15 @@ public sealed class QdrantVectorStore : IVectorStore
     private async Task UpsertAsync(string collection, string id, float[] vector, object payload, CancellationToken ct)
     {
         var body = new { points = new[] { new { id, vector, payload } } };
+        using var resp = await _http.PutAsJsonAsync($"collections/{collection}/points?wait=true", body, ct).ConfigureAwait(false);
+        await ReadAsync(resp, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Upsert many points in one request — same endpoint as <see cref="UpsertAsync"/>,
+    /// just with more than one entry in the <c>points</c> array.</summary>
+    private async Task UpsertManyAsync(string collection, IEnumerable<object> points, CancellationToken ct)
+    {
+        var body = new { points };
         using var resp = await _http.PutAsJsonAsync($"collections/{collection}/points?wait=true", body, ct).ConfigureAwait(false);
         await ReadAsync(resp, ct).ConfigureAwait(false);
     }
