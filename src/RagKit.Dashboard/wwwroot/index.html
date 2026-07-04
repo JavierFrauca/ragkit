@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RagKit — Panel de mantenimiento</title>
+<style>
+  :root { color-scheme: light dark; --accent: #6b4fbb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { display: flex; align-items: center; gap: .5rem; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: .3rem; }
+  .logo { color: var(--accent); }
+  .stats { display: flex; gap: 1.5rem; border: 1px solid #8883; border-radius: .5rem; padding: 1rem; margin-top: 1rem; }
+  .stats div b { display: block; font-size: 1.4rem; }
+  section { margin-top: 1rem; }
+  table { width: 100%; border-collapse: collapse; margin: .5rem 0; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8882; font-size: .9rem; }
+  form.inline { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+  input, textarea, select { font: inherit; padding: .3rem .5rem; border: 1px solid #8886; border-radius: .3rem; background: transparent; color: inherit; }
+  textarea { width: 100%; min-height: 4rem; }
+  button { font: inherit; padding: .3rem .8rem; border-radius: .3rem; border: 1px solid var(--accent); background: var(--accent); color: white; cursor: pointer; }
+  button.secondary { background: transparent; color: inherit; border-color: #8886; }
+  button.danger { background: #b3261e; border-color: #b3261e; }
+  code { background: #8882; padding: .1rem .3rem; border-radius: .25rem; }
+  .muted { opacity: .7; font-size: .85rem; }
+  .warn { color: #b3261e; }
+  .chunk { border: 1px solid #8883; border-radius: .3rem; padding: .5rem; margin: .3rem 0; font-size: .85rem; }
+</style>
+</head>
+<body>
+  <h1><span class="logo">◆</span> RagKit — Panel de mantenimiento</h1>
+  <p class="muted">Sin autenticación propia — ver <a href="https://github.com/JavierFrauca/ragkit/blob/main/src/RagKit.Dashboard/README.md">README de seguridad</a>.</p>
+
+  <div class="stats" id="stats">
+    <div><b id="stat-chunks">…</b>chunks</div>
+    <div><b id="stat-domains">…</b>dominios</div>
+    <div><b id="stat-documents">…</b>documentos</div>
+  </div>
+
+  <section>
+    <h2>Dominios</h2>
+    <form class="inline" id="form-domain">
+      <input name="name" placeholder="nombre" required />
+      <input name="description" placeholder="descripción (opcional)" />
+      <button type="submit">Crear</button>
+    </form>
+    <table id="table-domains"><thead><tr><th>Nombre</th><th>Descripción</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Etiquetas</h2>
+    <form class="inline" id="form-label">
+      <input name="name" placeholder="nombre" required />
+      <input name="description" placeholder="descripción (opcional)" />
+      <button type="submit">Crear</button>
+    </form>
+    <table id="table-labels"><thead><tr><th>Nombre</th><th>Descripción</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Documentos</h2>
+    <form class="inline" id="form-doc-filter">
+      <input name="domain" placeholder="filtrar por dominio (opcional)" />
+      <button type="submit">Listar</button>
+    </form>
+    <table id="table-documents"><thead><tr><th>Source</th><th>Dominio</th><th>Chunks</th><th>Ingerido</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="chunk-viewer"></div>
+  </section>
+
+  <section>
+    <h2>Ingesta</h2>
+    <p class="muted">Ingiere una carpeta ya presente en el servidor (ruta de fichero, no subida desde el navegador).</p>
+    <form class="inline" id="form-ingest">
+      <input name="path" placeholder="ruta de carpeta en el servidor" required style="flex:1" />
+      <input name="domain" placeholder="dominio (opcional)" />
+      <label><input type="checkbox" name="recursive" checked /> recursivo</label>
+      <button type="submit">Ingerir</button>
+    </form>
+    <div id="ingest-log"></div>
+  </section>
+
+  <section>
+    <h2>Guardarails</h2>
+    <form class="inline" id="form-guardrail">
+      <input name="description" placeholder="regla en lenguaje natural" required style="flex:1" />
+      <select name="stage"><option value="Input">Input</option><option value="Output">Output</option></select>
+      <input name="domain" placeholder="dominio (opcional)" />
+      <input name="profile" placeholder="perfil (opcional)" />
+      <button type="submit">Crear</button>
+    </form>
+    <table id="table-guardrails"><thead><tr><th>Descripción</th><th>Etapa</th><th>Dominio</th><th>Perfil</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Perfiles</h2>
+    <form class="inline" id="form-profile">
+      <input name="name" placeholder="nombre" required />
+      <input name="domain" placeholder="dominio" required />
+      <input name="description" placeholder="descripción (opcional)" />
+      <input name="prompt" placeholder="prompt (opcional)" style="flex:1" />
+      <button type="submit">Crear</button>
+    </form>
+    <table id="table-profiles"><thead><tr><th>Nombre</th><th>Dominio</th><th>Prompt</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Prompts</h2>
+    <label>OneShotPrompt</label>
+    <textarea id="prompt-oneshot" placeholder="(sin definir → prompt por defecto con citas)"></textarea>
+    <label>ChatPrompt</label>
+    <textarea id="prompt-chat" placeholder="(sin definir → cae en OneShotPrompt o el por defecto)"></textarea>
+    <button id="btn-save-prompts">Guardar</button>
+    <p class="muted">Se aplican en la siguiente pregunta, sin recrear el cliente. No se persisten entre reinicios del proceso.</p>
+
+    <h3>Prompts por dominio</h3>
+    <form class="inline" id="form-domain-prompt">
+      <input name="domain" placeholder="dominio" required />
+      <input name="prompt" placeholder="prompt" required style="flex:1" />
+      <button type="submit">Guardar</button>
+    </form>
+    <table id="table-domain-prompts"><thead><tr><th>Dominio</th><th>Prompt</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Playground</h2>
+    <form class="inline" id="form-ask">
+      <input name="question" placeholder="pregunta" required style="flex:1" />
+      <input name="domain" placeholder="dominio (opcional)" />
+      <input name="profile" placeholder="perfil (opcional)" />
+      <button type="submit">Preguntar (streaming)</button>
+    </form>
+    <div id="ask-citations"></div>
+    <div id="ask-answer" class="chunk"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

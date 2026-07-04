@@ -110,6 +110,29 @@ sealed class SseHandler(string body) : System.Net.Http.HttpMessageHandler
         });
 }
 
+/// <summary>A fake Qdrant `points/scroll` endpoint that splits its points across two
+/// pages, so a caller's cursor-following loop can be tested without a real Qdrant
+/// instance or a real collection with more than one page of points.</summary>
+sealed class QdrantScrollPagingHandler : System.Net.Http.HttpMessageHandler
+{
+    public int Calls { get; private set; }
+
+    protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(
+        System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Calls++;
+        var requestBody = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var isSecondPage = requestBody.Contains("\"offset\"");
+        var json = isSecondPage
+            ? """{"result":{"points":[{"id":"p2","payload":{"source":"b.txt","text":"pagina dos","labels":[],"ingestedAtUtc":"2026-01-01T00:00:00Z"}}],"next_page_offset":null}}"""
+            : """{"result":{"points":[{"id":"p1","payload":{"source":"a.txt","text":"pagina uno","labels":[],"ingestedAtUtc":"2026-01-01T00:00:00Z"}}],"next_page_offset":"cursor-1"}}""";
+        return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent(json)
+        };
+    }
+}
+
 /// <summary>A reranker that moves a given source to the front.</summary>
 sealed class FrontReranker(string front) : IReranker
 {
@@ -291,6 +314,44 @@ public class RagKitTests
         var ans = await rag.AskAsync("¿qué sección de cable para 25 amperios?");
         Assert.Equal("respuesta", ans.Answer);
         Assert.Equal("Eres electricista. Responde con normativa eléctrica.", answer.Last![0].Content); // profile prompt used
+    }
+
+    [Fact]
+    public async Task OneShotPrompt_and_ChatPrompt_are_editable_live_without_recreating_the_client()
+    {
+        var answer = new FakeChat("respuesta");
+        var rag = await BuildAsync(answer, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido", "d.txt", domain: "docs");
+
+        Assert.Null(rag.OneShotPrompt); // default: citation-aware default prompt, not set
+
+        rag.OneShotPrompt = "Eres un asistente muy formal.";
+        await rag.AskAsync("pregunta", domain: "docs");
+        Assert.Equal("Eres un asistente muy formal.", answer.Last![0].Content);
+
+        rag.OneShotPrompt = "Eres un asistente muy informal.";
+        await rag.AskAsync("otra pregunta", domain: "docs");
+        Assert.Equal("Eres un asistente muy informal.", answer.Last![0].Content); // takes effect on the very next call
+
+        rag.ChatPrompt = "Prompt de chat.";
+        var chat = rag.StartChat(domain: "docs");
+        await chat.AskAsync("hola");
+        Assert.Equal("Prompt de chat.", answer.Last![0].Content);
+    }
+
+    [Fact]
+    public async Task DomainPrompts_can_be_set_and_removed()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        Assert.Empty(rag.DomainPrompts);
+
+        rag.SetDomainPrompt("fiscal", "Eres un asesor fiscal.");
+        Assert.Equal("Eres un asesor fiscal.", rag.DomainPrompts["fiscal"]);
+
+        Assert.True(rag.RemoveDomainPrompt("fiscal"));
+        Assert.False(rag.RemoveDomainPrompt("fiscal")); // already gone
+        Assert.Empty(rag.DomainPrompts);
     }
 
     [Fact]
@@ -697,6 +758,47 @@ public class RagKitTests
     }
 
     [Fact]
+    public void RrfFuse_preserves_the_chunk_id_of_a_lexical_only_match()
+    {
+        // Regression: RrfFuse used to promote a lexical-only match to a StoredHit
+        // without carrying over its real Id, so hits that only came from the lexical
+        // side of hybrid search silently lost their id.
+        var method = typeof(RagClient).GetMethod("RrfFuse",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var lexicalOnly = new StoredChunk("only-lexical.txt", "contenido", null, Array.Empty<string>(), default, "chunk-42");
+        var result = (List<StoredHit>)method.Invoke(null, new object[]
+        {
+            Array.Empty<StoredHit>(), // no vector-side matches: this hit is lexical-only
+            new List<(StoredChunk Chunk, double Score)> { (lexicalOnly, 1.0) },
+        })!;
+
+        Assert.Single(result);
+        Assert.Equal("chunk-42", result[0].Id);
+    }
+
+    [Fact]
+    public async Task Lexical_index_sync_after_ingest_preserves_the_real_ingestion_timestamp()
+    {
+        // Regression: the post-ingest sync into the lexical index used to build a
+        // StoredChunk without IngestedAtUtc, even though the real timestamp was in
+        // scope — the lexical-only copy of a freshly ingested chunk got a default
+        // (epoch) timestamp instead.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, AutoClassify = false, TopK = 3 });
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido inicial", "seed.txt", domain: "docs");
+        await rag.AskAsync("contenido", domain: "docs"); // forces the lexical index to load
+
+        var before = DateTime.UtcNow;
+        await rag.IngestAsync("contenido nuevo tras cargar el indice", "fresh.txt", domain: "docs");
+
+        var lexicalField = typeof(RagClient).GetField("_lexical", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var lexical = (LexicalIndex)lexicalField.GetValue(rag)!;
+        var freshChunk = lexical.Search("contenido nuevo", 5, "docs", null).Single(h => h.Chunk.Source == "fresh.txt").Chunk;
+
+        Assert.True(freshChunk.IngestedAtUtc >= before); // not default/epoch
+    }
+
+    [Fact]
     public async Task Reranker_is_applied_after_fusion()
     {
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, TopK = 3 });
@@ -953,6 +1055,28 @@ public class RagKitTests
     }
 
     [Fact]
+    public async Task Qdrant_EnumerateAsync_follows_next_page_offset_across_pages()
+    {
+        // Regression: EnumerateAsync used to issue a single scroll and stop, silently
+        // truncating any collection whose points didn't fit in one page. This test
+        // simulates a two-page collection via a fake handler (no real Qdrant needed)
+        // and verifies EnumerateAsync (and ListDocumentsAsync's default DIM built on
+        // top of it) return every page's points, not just the first.
+        var handler = new QdrantScrollPagingHandler();
+        var http = new HttpClient(handler);
+        IVectorStore store = new QdrantVectorStore("http://127.0.0.1:6333", "ragkit_paging_test", http: http);
+
+        var all = await store.EnumerateAsync();
+        Assert.Equal(2, handler.Calls); // followed the cursor instead of stopping after page 1
+        Assert.Equal(2, all.Count);
+        Assert.Contains(all, c => c.Source == "a.txt");
+        Assert.Contains(all, c => c.Source == "b.txt");
+
+        var docs = await store.ListDocumentsAsync();
+        Assert.Equal(2, docs.Count);
+    }
+
+    [Fact]
     public async Task Qdrant_store_roundtrip_when_available()
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
@@ -1118,7 +1242,8 @@ public class RagKitTests
         await rag.IngestAsync("contrato de alquiler", "alquiler.txt", domain: "fincas");
 
         var removed = await rag.RemoveDomainAsync("payroll");
-        Assert.Equal(3, removed); // one chunk per document in this test
+        Assert.True(removed.Existed);
+        Assert.Equal(3, removed.RemovedChunks); // one chunk per document in this test
 
         Assert.DoesNotContain(await rag.ListDomainsAsync(), d => d.Name == "payroll");
         Assert.Empty(await rag.ListDocumentsAsync("payroll"));
@@ -1127,6 +1252,51 @@ public class RagKitTests
         Assert.Contains(await rag.ListDomainsAsync(), d => d.Name == "fincas");
         Assert.Single(await rag.ListDocumentsAsync("fincas"));
         Assert.Equal(1, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task RemoveDomainAsync_distinguishes_a_nonexistent_domain_from_one_with_zero_chunks()
+    {
+        // Regression: RemoveDomainAsync used to discard the "did the domain actually
+        // exist" signal and return only the chunk count, so removing a never-defined
+        // domain (e.g. a typo) looked identical to removing an empty one — both gave 0.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("empty-domain");
+
+        var neverExisted = await rag.RemoveDomainAsync("no-such-domain");
+        Assert.False(neverExisted.Existed);
+        Assert.Equal(0, neverExisted.RemovedChunks);
+
+        var existedButEmpty = await rag.RemoveDomainAsync("empty-domain");
+        Assert.True(existedButEmpty.Existed);
+        Assert.Equal(0, existedButEmpty.RemovedChunks);
+    }
+
+    [Fact]
+    public async Task RemoveDomainAsync_cascades_to_profiles_and_guardrails_scoped_to_that_domain()
+    {
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("payroll");
+        await rag.DefineDomainAsync("fincas");
+
+        // Profile + domain-scoped guardrail on the domain being removed.
+        await rag.DefineProfileAsync(new ProfileInfo("gestor", "payroll", Prompt: "Eres gestor de nóminas."));
+        await rag.DefineGuardrailAsync(new GuardrailRule("No reveles el salario de otros empleados", GuardrailStage.Output, "payroll"));
+        // Survivors: a profile/guardrail on the other domain, and a global guardrail.
+        await rag.DefineProfileAsync(new ProfileInfo("notario", "fincas"));
+        await rag.DefineGuardrailAsync(new GuardrailRule("No reveles datos de terceros", GuardrailStage.Output, "fincas"));
+        await rag.DefineGuardrailAsync(new GuardrailRule("Rechaza peticiones ilegales")); // global: Domain == null
+
+        await rag.RemoveDomainAsync("payroll");
+
+        var profiles = await rag.ListProfilesAsync();
+        Assert.DoesNotContain(profiles, p => p.Domain == "payroll");
+        Assert.Contains(profiles, p => p.Domain == "fincas" && p.Name == "notario");
+
+        var guardrails = await rag.ListGuardrailsAsync();
+        Assert.DoesNotContain(guardrails, r => r.Domain == "payroll");
+        Assert.Contains(guardrails, r => r.Domain == "fincas");
+        Assert.Contains(guardrails, r => r.Domain is null); // global guardrail survives
     }
 
     [Fact]
@@ -1271,6 +1441,52 @@ public class RagKitTests
         var unchangedFincas = await rag.IngestIfChangedAsync("contenido de fincas, distinto del anterior", "contrato.txt", domain: "fincas");
         Assert.Equal(IngestOutcome.Unchanged, unchangedFincas.Outcome);
         Assert.Equal(2, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task IngestIfChangedAsync_does_not_collide_manifest_keys_across_differently_split_domain_and_source()
+    {
+        // Regression: manifestKey used to be a naive $"{domain}:{source}" join, so two
+        // distinct (domain, source) pairs whose concatenation produces the identical
+        // string (domain="a:b", source="c" vs domain="a", source="b:c" both join to
+        // "a:b:c") shared the same manifest entry and silently overwrote each other's hash.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("a:b");
+        await rag.DefineDomainAsync("a");
+
+        await rag.IngestIfChangedAsync("contenido uno", "c", domain: "a:b");
+        var result = await rag.IngestIfChangedAsync("contenido dos, distinto del anterior", "b:c", domain: "a");
+
+        Assert.Equal(IngestOutcome.Ingested, result.Outcome); // must not read as Unchanged due to key collision
+        Assert.Equal(2, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task IngestIfChangedAsync_reingests_after_a_restart_wiped_the_chunks_but_not_the_manifest()
+    {
+        // Regression: InMemoryVectorStore persists its catalog (including the ingest
+        // manifest hash) to disk, but chunks are in-memory only. Trusting the surviving
+        // hash alone would report Unchanged even though the "restarted" store is empty.
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-restart-" + Guid.NewGuid().ToString("N"));
+        var embedder = new LocalEmbedder();
+
+        var store1 = new InMemoryVectorStore(dir);
+        await store1.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag1 = new RagClient(new RagOptions { AutoClassify = false }, embedder, store1, new FakeChat("ok"), new FakeChat("{}"));
+        await rag1.DefineDomainAsync("docs");
+        await rag1.IngestIfChangedAsync("contenido estable", "d.txt", domain: "docs");
+        Assert.Equal(1, await rag1.ChunkCountAsync());
+
+        // Simulate a process restart against the same dataPath: a fresh store/RagClient,
+        // same on-disk manifest, but an empty in-memory chunk list.
+        var store2 = new InMemoryVectorStore(dir);
+        await store2.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag2 = new RagClient(new RagOptions { AutoClassify = false }, embedder, store2, new FakeChat("ok"), new FakeChat("{}"));
+        Assert.Equal(0, await rag2.ChunkCountAsync()); // confirms the chunks really didn't survive
+
+        var result = await rag2.IngestIfChangedAsync("contenido estable", "d.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Ingested, result.Outcome); // must not be Unchanged
+        Assert.Equal(1, await rag2.ChunkCountAsync());
     }
 
     // --- FR-04: folder ingestion ----------------------------------------------

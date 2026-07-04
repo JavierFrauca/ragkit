@@ -79,6 +79,11 @@ public sealed record IngestResult(
 /// <see cref="Source"/>, aggregated for inventory purposes.</summary>
 public sealed record DocumentInfo(string Source, string? Domain, int ChunkCount, DateTime IngestedAtUtc);
 
+/// <summary>Result of <see cref="RagClient.RemoveDomainAsync"/>: whether the domain
+/// actually existed (distinct from having existed with zero chunks) and how many
+/// chunks were removed.</summary>
+public sealed record DomainRemovalResult(bool Existed, int RemovedChunks);
+
 /// <summary>One chat message (role = "system" | "user" | "assistant").</summary>
 public readonly record struct ChatMessage(string Role, string Content);
 

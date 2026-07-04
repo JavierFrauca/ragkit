@@ -45,8 +45,10 @@ dotnet add package RagKit.Onnx            # embeddings ONNX locales
 dotnet add package RagKit.Postgres        # Postgres + pgvector
 dotnet add package RagKit.SqlServer       # SQL Server 2025 (VECTOR)
 dotnet add package RagKit.Mcp            # herramientas MCP externas
+dotnet add package RagKit.Dashboard      # panel de mantenimiento opt-in (net10.0)
 ```
-Compatible con **.NET 8** y **.NET 10** (`net8.0` / `net10.0`).
+Compatible con **.NET 8** y **.NET 10** (`net8.0` / `net10.0`) — salvo
+`RagKit.Dashboard`, acoplado a ASP.NET Core, que solo target `net10.0`.
 
 ## Lo que configuras
 | Opción | Para qué |
@@ -216,6 +218,17 @@ await rag.RemoveProfileAsync("fontanero", "construccion");
 var perfiles = await rag.ListProfilesAsync();
 ```
 
+**Prompts editables en caliente.** `OneShotPrompt`/`ChatPrompt`/`DomainPrompts`
+se pueden leer y mutar directamente sobre el `RagClient` ya creado — el cambio
+se aplica en la siguiente pregunta, sin recrear el cliente (a diferencia de
+perfiles/guardarails, esto **no** se persiste en el store; vive en memoria
+del proceso):
+```csharp
+rag.OneShotPrompt = "Eres un asistente muy formal.";
+rag.SetDomainPrompt("fiscal", "Eres un asesor fiscal.");
+rag.RemoveDomainPrompt("fiscal");
+```
+
 ## Gestión de documentos
 Más allá de ingestar, RagKit sabe **borrar, listar, reingestar sin duplicar y
 recorrer una carpeta**, con el mismo contrato en los 4 backends:
@@ -237,8 +250,10 @@ var r = await rag.IngestFileIfChangedAsync("iva.txt", domain: "fiscal");
 await foreach (var res in rag.IngestFolderAsync("./docs", domain: "fiscal", recursive: true))
     Console.WriteLine($"{res.Source}: {res.Outcome}");
 
-// Borrado de un dominio completo: sus chunks + la propia definición del dominio.
-int borradosDominio = await rag.RemoveDomainAsync("fiscal");
+// Borrado de un dominio completo: sus chunks, la propia definición del dominio,
+// y en cascada los perfiles/guardarailes que solo aplicaban a ese dominio
+// (los globales y los de otros dominios no se tocan).
+var borrado = await rag.RemoveDomainAsync("fiscal"); // DomainRemovalResult(Existed, RemovedChunks)
 
 // Listado paginado de los chunks de un documento (no carga la colección entera).
 string? cursor = null;
@@ -262,6 +277,23 @@ await rag.DeleteCatalogEntryAsync("app-config", "feature-flags");
 que no implemente el catálogo (p. ej. uno propio de terceros) simplemente no persiste
 nada (no-op), sin romper el contrato.
 
+## Panel de mantenimiento (`RagKit.Dashboard`)
+Paquete opt-in con un panel mínimo de administración (al estilo del dashboard de
+Qdrant o el de Hangfire) sobre la API pública de `RagClient`. Se monta con una línea:
+```csharp
+builder.Services.AddSingleton(rag); // tu RagClient ya creado
+// ...
+app.MapRagDashboard(path: "/rag-admin").RequireAuthorization("AdminOnly");
+```
+**Sin autenticación propia por defecto** — `MapRagDashboard` devuelve un
+`IEndpointConventionBuilder` para que cuelgues tu propio esquema de auth de ASP.NET
+Core; no lo expongas público sin ello. Solo target `net10.0` (acoplado a ASP.NET
+Core). Trae CRUD completo de **dominios, etiquetas, documentos, chunks
+paginados, guardarails, perfiles y prompts**, **ingesta con seguimiento de
+progreso** (vía Server-Sent Events) y un **playground de preguntas**
+(`AskAsync`/`AskStreamAsync`, citas antes que los tokens) — ver
+[`src/RagKit.Dashboard/README.md`](src/RagKit.Dashboard/README.md).
+
 ## Estado y roadmap
 **Hecho y testeado:**
 - ✅ Fachada `RagClient` (`CreateAsync`), dos tiers, dominios/etiquetas, prompts (one-shot/chat) configurables en Markdown.
@@ -271,6 +303,11 @@ nada (no-op), sin romper el contrato.
 - ✅ Cliente chat compatible OpenAI (solo `HttpClient`); recuperación acotada por dominio/etiquetas; troceado por frontera.
 - ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), borrado de dominio completo (`RemoveDomainAsync`), inventario agregado (`ListDocumentsAsync`), listado paginado de chunks por documento con id (`ListChunksAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
+- ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
+- ✅ **`RagKit.Dashboard`** — panel de mantenimiento opt-in: montaje, auth hook,
+  CRUD completo, ingesta con seguimiento de progreso (SSE) y playground de
+  preguntas (`AskAsync`/`AskStreamAsync`, SSE). Pendiente: empaquetado/CI
+  ampliada y una suite de tests más exhaustiva (Milestones 5-6).
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -306,5 +343,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 63 tests, sin red (net8.0 y net10.0)
+dotnet test   # 72 tests del core (net8.0 y net10.0) + 21 de RagKit.Dashboard (net10.0), sin red
 ```

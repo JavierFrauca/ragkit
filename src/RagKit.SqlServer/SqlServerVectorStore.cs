@@ -21,7 +21,9 @@ public static class SqlServerStore
 /// SQL Server 2025 store using the native <c>VECTOR</c> type and
 /// <c>VECTOR_DISTANCE('cosine', …)</c>. Chunks in <c>{collection}_chunks</c>;
 /// domains/labels and the embedding guard in sibling tables. Labels are stored as
-/// JSON and the "must contain all" filter is applied in-process (over-fetched).
+/// JSON and the "must contain all" filter is applied exactly in SQL via
+/// <c>OPENJSON</c> (see <see cref="SearchAsync"/>), not over-fetched and
+/// filtered in-process.
 /// </summary>
 public sealed class SqlServerVectorStore : IVectorStore
 {
@@ -179,12 +181,11 @@ public sealed class SqlServerVectorStore : IVectorStore
     {
         if (chunks.Count == 0) return;
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
-        for (int start = 0; start < chunks.Count; start += BatchRows)
+        foreach (var batch in chunks.Chunk(BatchRows))
         {
-            var batch = chunks.Skip(start).Take(BatchRows).ToList();
-            var values = new List<string>(batch.Count);
+            var values = new List<string>(batch.Length);
             await using var cmd = new SqlCommand { Connection = con };
-            for (int i = 0; i < batch.Count; i++)
+            for (int i = 0; i < batch.Length; i++)
             {
                 var c = batch[i];
                 values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},CAST(@emb{i} AS vector({_dim})),@ing{i})");

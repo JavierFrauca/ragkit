@@ -167,21 +167,32 @@ public sealed class QdrantVectorStore : IVectorStore
 
     public async Task<IReadOnlyList<StoredChunk>> EnumerateAsync(CancellationToken ct = default)
     {
-        // Single large scroll (enough for typical corpora; paginate for very large ones).
-        using var resp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/scroll",
-            new { limit = 10000, with_payload = true }, ct).ConfigureAwait(false);
-        var json = await ReadAsync(resp, ct).ConfigureAwait(false);
+        // Follows next_page_offset until Qdrant reports none left, so collections
+        // bigger than one page (unlike a single capped scroll) are still returned whole.
         var outList = new List<StoredChunk>();
-        foreach (var p in json.RootElement.GetProperty("result").GetProperty("points").EnumerateArray())
+        string? cursor = null;
+        do
         {
-            var pay = p.GetProperty("payload");
-            var labels = pay.TryGetProperty("labels", out var la) && la.ValueKind == JsonValueKind.Array
-                ? la.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
-                : new List<string>();
-            outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
-                pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labels, ParseIngestedAt(pay), IdOf(p)));
-        }
+            object body = cursor is null
+                ? new { limit = 10000, with_payload = true }
+                : new { limit = 10000, with_payload = true, offset = cursor };
+            using var resp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/scroll", body, ct).ConfigureAwait(false);
+            var json = await ReadAsync(resp, ct).ConfigureAwait(false);
+            var result = json.RootElement.GetProperty("result");
+            foreach (var p in result.GetProperty("points").EnumerateArray())
+            {
+                var pay = p.GetProperty("payload");
+                var labels = pay.TryGetProperty("labels", out var la) && la.ValueKind == JsonValueKind.Array
+                    ? la.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
+                    : new List<string>();
+                outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
+                    pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
+                    labels, ParseIngestedAt(pay), IdOf(p)));
+            }
+            cursor = result.TryGetProperty("next_page_offset", out var npo) && npo.ValueKind != JsonValueKind.Null
+                ? (npo.ValueKind == JsonValueKind.String ? npo.GetString() : npo.GetRawText())
+                : null;
+        } while (cursor is not null);
         return outList;
     }
 
@@ -201,22 +212,30 @@ public sealed class QdrantVectorStore : IVectorStore
     // Generic consumer catalog: distinct "catalog:" id prefix so a caller-chosen
     // kind/key (e.g. kind="domain") can never collide with the internal domain/label/
     // settings points, which are namespaced under "domain:"/"label:"/"settings:".
+    // kind/key are escaped before joining (defense in depth on top of RagClient's own
+    // escaping of its manifest keys) so a ':' inside either can never make two distinct
+    // (kind, key) pairs hash to the same point id.
     public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
     {
-        var pay = await GetPointPayloadAsync(_catalog, Uuid($"catalog:{kind}:{key}"), ct).ConfigureAwait(false);
+        var pay = await GetPointPayloadAsync(_catalog, CatalogPointId(kind, key), ct).ConfigureAwait(false);
         return pay is null ? null : Str(pay.Value, "json");
     }
 
     public Task SaveCatalogEntryAsync(string kind, string key, string json, CancellationToken ct = default)
-        => UpsertAsync(_catalog, Uuid($"catalog:{kind}:{key}"), new float[] { 0f },
+        => UpsertAsync(_catalog, CatalogPointId(kind, key), new float[] { 0f },
             new { kind = "catalog", entryKind = kind, key, json }, ct);
 
     public async Task DeleteCatalogEntryAsync(string kind, string key, CancellationToken ct = default)
     {
         using var resp = await _http.PostAsJsonAsync($"collections/{_catalog}/points/delete?wait=true",
-            new { points = new[] { Uuid($"catalog:{kind}:{key}") } }, ct).ConfigureAwait(false);
+            new { points = new[] { CatalogPointId(kind, key) } }, ct).ConfigureAwait(false);
         await ReadAsync(resp, ct).ConfigureAwait(false);
     }
+
+    private static string CatalogPointId(string kind, string key)
+        => Uuid($"catalog:{EscapeCatalogPart(kind)}:{EscapeCatalogPart(key)}");
+
+    private static string EscapeCatalogPart(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:");
 
     public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
     {

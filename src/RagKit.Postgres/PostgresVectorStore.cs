@@ -157,12 +157,11 @@ public sealed class PostgresVectorStore : IVectorStore
     public async Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
     {
         if (chunks.Count == 0) return;
-        for (int start = 0; start < chunks.Count; start += BatchRows)
+        foreach (var batch in chunks.Chunk(BatchRows))
         {
-            var batch = chunks.Skip(start).Take(BatchRows).ToList();
-            var values = new List<string>(batch.Count);
+            var values = new List<string>(batch.Length);
             await using var cmd = _ds.CreateCommand();
-            for (int i = 0; i < batch.Count; i++)
+            for (int i = 0; i < batch.Length; i++)
             {
                 var c = batch[i];
                 values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},@emb{i}::vector,@ing{i})");

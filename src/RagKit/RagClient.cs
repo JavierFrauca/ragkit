@@ -79,6 +79,37 @@ public sealed class RagClient
     /// <summary>Install an optional second-stage reranker (applied after RRF fusion).</summary>
     public void SetReranker(IReranker reranker) => _reranker = reranker;
 
+    // --- live prompt editing --------------------------------------------------
+    // Forward straight to RagOptions, which SelectPrompt already re-reads on every
+    // call — so these take effect on the very next Ask, no client recreation needed.
+    // (Before this, the only way to edit a prompt live was for the consumer to hold
+    // onto its own RagOptions instance and mutate it directly, as examples/MiniRag
+    // does — these properties give any consumer, including RagKit.Dashboard, a
+    // supported way to do the same without needing the original RagOptions.)
+
+    /// <summary>System prompt (Markdown) for one-shot <see cref="AskAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>. Null → citation-aware default.</summary>
+    public string? OneShotPrompt
+    {
+        get => _options.OneShotPrompt;
+        set => _options.OneShotPrompt = value;
+    }
+
+    /// <summary>System prompt (Markdown) for <see cref="StartChat"/>. Null → falls back to <see cref="OneShotPrompt"/> or the default.</summary>
+    public string? ChatPrompt
+    {
+        get => _options.ChatPrompt;
+        set => _options.ChatPrompt = value;
+    }
+
+    /// <summary>Per-domain system prompts, read-only view — see <see cref="SetDomainPrompt"/>/<see cref="RemoveDomainPrompt"/> to edit.</summary>
+    public IReadOnlyDictionary<string, string> DomainPrompts => (IReadOnlyDictionary<string, string>)_options.DomainPrompts;
+
+    /// <summary>Set (or replace) the system prompt for a specific domain.</summary>
+    public void SetDomainPrompt(string domain, string prompt) => _options.DomainPrompts[domain] = prompt;
+
+    /// <summary>Remove a domain's prompt override, if any. Returns true if one was removed.</summary>
+    public bool RemoveDomainPrompt(string domain) => _options.DomainPrompts.Remove(domain);
+
     private static IChatClient BuildChat(LlmConfig cfg, string which)
     {
         if (!cfg.IsConfigured)
@@ -262,7 +293,7 @@ public sealed class RagClient
         // Keep the lexical index in sync only once it's been loaded; otherwise the
         // first retrieval will enumerate these chunks from the store anyway.
         if (_options.Hybrid && Volatile.Read(ref _lexicalLoaded))
-            foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels));
+            foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels, c.IngestedAtUtc));
 
         return new IngestResult(source, domain, labelArr, chunks.Count, Confidence: confidence);
     }
@@ -288,11 +319,20 @@ public sealed class RagClient
         string text, string source, string? domain = null, IEnumerable<string>? labels = null, CancellationToken ct = default)
     {
         var hash = ContentHash.Compute(text);
-        var manifestKey = domain is null ? source : $"{domain}:{source}";
+        var manifestKey = BuildManifestKey(domain, source);
         var previousHash = await _store.GetCatalogEntryAsync(IngestManifestKind, manifestKey, ct).ConfigureAwait(false);
         if (previousHash == hash)
-            return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
-                Reason: "El contenido no ha cambiado desde la última ingesta.");
+        {
+            // The manifest hash alone isn't enough: a backend (e.g. InMemoryVectorStore)
+            // may persist the catalog to disk while the chunks themselves stay in-memory
+            // only, so a process restart can leave a "matching" manifest pointing at chunks
+            // that no longer exist. Confirm the store still actually has content for this
+            // source before trusting the hash.
+            var stillPresent = await _store.ListChunksAsync(source, domain, take: 1, ct: ct).ConfigureAwait(false);
+            if (stillPresent.Items.Count > 0)
+                return new IngestResult(source, domain, Array.Empty<string>(), 0, IngestOutcome.Unchanged,
+                    Reason: "El contenido no ha cambiado desde la última ingesta.");
+        }
 
         if (previousHash is not null)
             await RemoveDocumentAsync(source, domain, ct).ConfigureAwait(false);
@@ -302,6 +342,19 @@ public sealed class RagClient
             await _store.SaveCatalogEntryAsync(IngestManifestKind, manifestKey, hash, ct).ConfigureAwait(false);
         return result;
     }
+
+    /// <summary>
+    /// Builds an unambiguous manifest key from <paramref name="domain"/> and
+    /// <paramref name="source"/>: naively joining them as <c>$"{domain}:{source}"</c>
+    /// lets two distinct pairs collide (e.g. <c>("a:b", "c")</c> and <c>("a", "b:c")</c>
+    /// both yield <c>"a:b:c"</c>). Escaping <c>\</c> and <c>:</c> in each part before
+    /// joining with an unescaped <c>:</c> makes the join injective; a control-character
+    /// sentinel stands in for a null domain so it can never collide with an escaped one.
+    /// </summary>
+    private static string BuildManifestKey(string? domain, string source)
+        => $"{(domain is null ? "\u0000" : EscapeKeyPart(domain))}:{EscapeKeyPart(source)}";
+
+    private static string EscapeKeyPart(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:");
 
     /// <summary>Idempotent counterpart of <see cref="IngestFileAsync"/> — see
     /// <see cref="IngestIfChangedAsync"/>.</summary>
@@ -357,20 +410,48 @@ public sealed class RagClient
 
     /// <summary>
     /// Remove an entire domain: every chunk indexed under it (<see
-    /// cref="IVectorStore.DeleteByDomainAsync"/>) plus the domain definition itself
-    /// (<see cref="IVectorStore.DeleteDomainAsync"/>). Returns how many chunks were
-    /// removed. Also drops those entries from the in-memory hybrid (lexical) index, if
-    /// it's been loaded, so stale hits don't keep surfacing. Labels and any
-    /// profiles/guardrails scoped to the domain are untouched — remove them separately
-    /// if needed.
+    /// cref="IVectorStore.DeleteByDomainAsync"/>), the domain definition itself (<see
+    /// cref="IVectorStore.DeleteDomainAsync"/>), and every profile/guardrail scoped to
+    /// it — a profile's <see cref="ProfileInfo.Domain"/> always names a domain, and a
+    /// guardrail with <see cref="GuardrailRule.Domain"/> set (any <see
+    /// cref="GuardrailRule.Profile"/>) only ever applied within it, so once the domain is
+    /// gone neither means anything — worse, leaving them would let a later domain with the
+    /// same name silently reactivate them. Also drops those chunks from the in-memory
+    /// hybrid (lexical) index, if it's been loaded, so stale hits don't keep surfacing.
+    /// Labels are untouched (they aren't domain-scoped).
     /// </summary>
-    public async Task<int> RemoveDomainAsync(string name, CancellationToken ct = default)
+    public async Task<DomainRemovalResult> RemoveDomainAsync(string name, CancellationToken ct = default)
     {
         var removed = await _store.DeleteByDomainAsync(name, ct).ConfigureAwait(false);
-        await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
+        var existed = await _store.DeleteDomainAsync(name, ct).ConfigureAwait(false);
         if (removed > 0 && _options.Hybrid && Volatile.Read(ref _lexicalLoaded))
             _lexical.RemoveByDomain(name);
-        return removed;
+        await RemoveDomainConfigAsync(name, ct).ConfigureAwait(false);
+        return new DomainRemovalResult(existed, removed);
+    }
+
+    /// <summary>Drop every profile and guardrail scoped to <paramref name="domain"/> — the
+    /// config-cleanup half of <see cref="RemoveDomainAsync"/>.</summary>
+    private async Task RemoveDomainConfigAsync(string domain, CancellationToken ct)
+    {
+        await _configGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var profiles = _profiles.Where(p => !string.Equals(p.Domain, domain, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (profiles.Count != _profiles.Count)
+            {
+                await _store.SaveProfilesAsync(profiles, ct).ConfigureAwait(false);
+                _profiles = profiles;
+            }
+
+            var guardrails = _guardrails.Where(r => !string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (guardrails.Count != _guardrails.Count)
+            {
+                await _store.SaveGuardrailsAsync(guardrails, ct).ConfigureAwait(false);
+                _guardrails = guardrails;
+            }
+        }
+        finally { _configGate.Release(); }
     }
 
     /// <summary>List ingested documents (one entry per distinct source), optionally
@@ -857,7 +938,7 @@ public sealed class RagClient
             var c = lexical[i].Chunk;
             var key = Key(c.Source, c.Text);
             scores[key] = scores.GetValueOrDefault(key) + 1.0 / (rrfK + i + 1);
-            rep.TryAdd(key, new StoredHit(c.Source, c.Text, c.Domain, c.Labels, 0));
+            rep.TryAdd(key, new StoredHit(c.Source, c.Text, c.Domain, c.Labels, 0, c.Id));
         }
         return scores.OrderByDescending(kv => kv.Value)
             .Select(kv => rep[kv.Key] with { Score = kv.Value })
