@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RagKit.Dashboard.Endpoints;
 
 namespace RagKit.Dashboard;
 
@@ -32,18 +33,30 @@ public static class RagDashboardExtensions
         var normalized = "/" + path.Trim('/');
         var group = endpoints.MapGroup(normalized);
 
+        // JSON API — one file per resource under Endpoints/. Mapped before the static
+        // asset catch-all for readability; ASP.NET Core's routing matches by
+        // specificity regardless of registration order, so there's no actual conflict
+        // between e.g. "/api/domains" and the "/{**file}" catch-all below.
+        StatsEndpoints.Map(group);
+        DomainEndpoints.Map(group);
+        LabelEndpoints.Map(group);
+        DocumentEndpoints.Map(group);
+        GuardrailEndpoints.Map(group);
+        ProfileEndpoints.Map(group);
+        PromptEndpoints.Map(group);
+
         // Static assets (index.html, css, js…), embedded in the assembly — no
         // frontend build step for the consumer. A single catch-all handles both
-        // the bare path (file: "") and any sub-path.
-        group.MapGet("/{**file}", (string? file) => ServeEmbedded(string.IsNullOrEmpty(file) ? "index.html" : file));
-
-        // First slice of the JSON API — proves the RagClient DI wiring end-to-end.
-        // Domains/labels/documents/chunks/guardrails/profiles/prompts/ingest/ask
-        // land in later milestones under the same group.
-        group.MapGet("/api/stats", async (RagClient rag, CancellationToken ct) =>
+        // the bare path (file: "") and any sub-path. The frontend's own fetch()
+        // calls use paths relative to the current page (e.g. "api/domains"), which
+        // only resolve correctly if the browser's address bar ends in "/" — so a
+        // request for the bare mount path (no trailing slash) redirects once
+        // instead of silently serving index.html at the wrong base URL.
+        group.MapGet("/{**file}", (HttpContext context, string? file) =>
         {
-            var chunkCount = await rag.ChunkCountAsync(ct).ConfigureAwait(false);
-            return Results.Ok(new { chunkCount });
+            if (!string.IsNullOrEmpty(file)) return ServeEmbedded(file);
+            var rawPath = context.Request.Path.Value ?? "";
+            return rawPath.EndsWith('/') ? ServeEmbedded("index.html") : Results.Redirect(rawPath + "/");
         });
 
         return group;

@@ -4,6 +4,27 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.6.0] - 2026-07-04
+
+### Añadido
+- **`RagKit.Dashboard`: CRUD completo (Milestone 2)** — UI funcional (HTML/JS
+  embebido, sin build step) + API JSON sobre `RagClient`:
+  - Dominios: listar/crear/borrar (con aviso de que borrar un dominio también
+    borra en cascada sus documentos, perfiles y guardarails).
+  - Etiquetas: listar/crear (RagKit no expone borrado de etiquetas).
+  - Documentos: listar por dominio, borrar; visor de chunks paginado con
+    cursor (`ListChunksAsync`).
+  - Guardarails: listar/crear/borrar (el borrado es por igualdad de valor —
+    no tienen id — vía cuerpo JSON en el `DELETE`).
+  - Perfiles: listar/crear/borrar.
+  - Prompts: leer/editar `OneShotPrompt`/`ChatPrompt`/prompts por dominio en
+    caliente (ver `RagClient.OneShotPrompt` etc., Milestone 0).
+  - `api/stats` ampliado con recuento de dominios y documentos.
+  - Redirección automática cuando se accede a la ruta de montaje sin barra
+    final, para que las peticiones relativas del frontend resuelvan bien.
+  Verificado además manualmente en navegador (no solo con tests HTTP).
+  ([#22](https://github.com/JavierFrauca/ragkit/issues/22))
+
 ## [0.5.0] - 2026-07-04
 
 ### Añadido
