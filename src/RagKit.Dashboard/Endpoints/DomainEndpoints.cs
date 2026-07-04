@@ -23,8 +23,9 @@ internal static class DomainEndpoints
         // (RagClient.RemoveDomainAsync's cascade) — the UI must warn about this.
         group.MapDelete("/api/domains/{name}", async (string name, RagClient rag, CancellationToken ct) =>
         {
-            var removedChunks = await rag.RemoveDomainAsync(name, ct).ConfigureAwait(false);
-            return Results.Json(new { removedChunks }, DashboardJson.Options);
+            var result = await rag.RemoveDomainAsync(name, ct).ConfigureAwait(false);
+            if (!result.Existed) return Results.NotFound();
+            return Results.Json(new { removedChunks = result.RemovedChunks }, DashboardJson.Options);
         });
     }
 }

@@ -1175,7 +1175,8 @@ public class RagKitTests
         await rag.IngestAsync("contrato de alquiler", "alquiler.txt", domain: "fincas");
 
         var removed = await rag.RemoveDomainAsync("payroll");
-        Assert.Equal(3, removed); // one chunk per document in this test
+        Assert.True(removed.Existed);
+        Assert.Equal(3, removed.RemovedChunks); // one chunk per document in this test
 
         Assert.DoesNotContain(await rag.ListDomainsAsync(), d => d.Name == "payroll");
         Assert.Empty(await rag.ListDocumentsAsync("payroll"));
@@ -1184,6 +1185,24 @@ public class RagKitTests
         Assert.Contains(await rag.ListDomainsAsync(), d => d.Name == "fincas");
         Assert.Single(await rag.ListDocumentsAsync("fincas"));
         Assert.Equal(1, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task RemoveDomainAsync_distinguishes_a_nonexistent_domain_from_one_with_zero_chunks()
+    {
+        // Regression: RemoveDomainAsync used to discard the "did the domain actually
+        // exist" signal and return only the chunk count, so removing a never-defined
+        // domain (e.g. a typo) looked identical to removing an empty one — both gave 0.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("empty-domain");
+
+        var neverExisted = await rag.RemoveDomainAsync("no-such-domain");
+        Assert.False(neverExisted.Existed);
+        Assert.Equal(0, neverExisted.RemovedChunks);
+
+        var existedButEmpty = await rag.RemoveDomainAsync("empty-domain");
+        Assert.True(existedButEmpty.Existed);
+        Assert.Equal(0, existedButEmpty.RemovedChunks);
     }
 
     [Fact]

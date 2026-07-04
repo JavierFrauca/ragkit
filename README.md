@@ -253,7 +253,7 @@ await foreach (var res in rag.IngestFolderAsync("./docs", domain: "fiscal", recu
 // Borrado de un dominio completo: sus chunks, la propia definición del dominio,
 // y en cascada los perfiles/guardarailes que solo aplicaban a ese dominio
 // (los globales y los de otros dominios no se tocan).
-int borradosDominio = await rag.RemoveDomainAsync("fiscal");
+var borrado = await rag.RemoveDomainAsync("fiscal"); // DomainRemovalResult(Existed, RemovedChunks)
 
 // Listado paginado de los chunks de un documento (no carga la colección entera).
 string? cursor = null;

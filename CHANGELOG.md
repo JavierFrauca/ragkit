@@ -4,6 +4,17 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.7.0] - 2026-07-04
+
+### Cambiado (breaking)
+- **`RagClient.RemoveDomainAsync` devuelve `DomainRemovalResult(bool Existed,
+  int RemovedChunks)` en vez de `int`** — antes descartaba si el dominio
+  realmente existía, así que borrar un dominio inexistente (p.ej. un typo)
+  daba el mismo `0` que borrar uno vacío. `DomainEndpoints`'s `DELETE
+  api/domains/{name}` (RagKit.Dashboard) ahora devuelve `404` cuando
+  `!Existed` en vez de `200` siempre.
+  ([#31](https://github.com/JavierFrauca/ragkit/issues/31))
+
 ## [0.6.3] - 2026-07-04
 
 ### Corregido

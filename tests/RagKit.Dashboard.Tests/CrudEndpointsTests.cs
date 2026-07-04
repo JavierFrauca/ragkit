@@ -27,6 +27,19 @@ public class CrudEndpointsTests
     }
 
     [Fact]
+    public async Task Deleting_a_nonexistent_domain_returns_404()
+    {
+        // Regression: the endpoint used to return 200 {removedChunks:0} whether the
+        // domain existed or not, so a typo'd domain name looked like a successful delete.
+        var rag = await TestSupport.BuildRagAsync();
+        var (app, client) = await TestSupport.BuildHostAsync(rag);
+        await using var _ = app;
+
+        var del = await client.DeleteAsync("/rag-admin/api/domains/no-existe");
+        Assert.Equal(HttpStatusCode.NotFound, del.StatusCode);
+    }
+
+    [Fact]
     public async Task Labels_can_be_created_and_listed()
     {
         var rag = await TestSupport.BuildRagAsync();
