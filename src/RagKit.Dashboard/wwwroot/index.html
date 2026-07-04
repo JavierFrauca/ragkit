@@ -69,6 +69,18 @@
   </section>
 
   <section>
+    <h2>Ingesta</h2>
+    <p class="muted">Ingiere una carpeta ya presente en el servidor (ruta de fichero, no subida desde el navegador).</p>
+    <form class="inline" id="form-ingest">
+      <input name="path" placeholder="ruta de carpeta en el servidor" required style="flex:1" />
+      <input name="domain" placeholder="dominio (opcional)" />
+      <label><input type="checkbox" name="recursive" checked /> recursivo</label>
+      <button type="submit">Ingerir</button>
+    </form>
+    <div id="ingest-log"></div>
+  </section>
+
+  <section>
     <h2>Guardarails</h2>
     <form class="inline" id="form-guardrail">
       <input name="description" placeholder="regla en lenguaje natural" required style="flex:1" />

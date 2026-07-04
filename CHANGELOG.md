@@ -4,6 +4,20 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.7.2] - 2026-07-04
+
+### Añadido
+- **`RagKit.Dashboard`: ingesta con seguimiento de progreso (Milestone 3)** —
+  `POST api/ingest {path, domain, recursive}` lanza una ingesta de carpeta en
+  segundo plano (`IngestFolderAsync`) y devuelve un `runId` al instante;
+  `GET api/ingest/{runId}/stream` expone el progreso vía Server-Sent Events
+  (un evento por fichero, más un evento final con el estado
+  `Completed`/`Failed`), sin polling. Solo rutas de servidor (fichero/carpeta
+  ya en disco) — sin subida desde el navegador. Estado en memoria,
+  deliberadamente efímero (se pierde al reiniciar el proceso). Nueva sección
+  "Ingesta" en la UI, verificada manualmente en navegador.
+  ([#35](https://github.com/JavierFrauca/ragkit/issues/35))
+
 ## [0.7.1] - 2026-07-04
 
 ### Corregido
