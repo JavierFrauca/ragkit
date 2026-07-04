@@ -151,7 +151,7 @@ public sealed class PostgresVectorStore : IVectorStore
     {
         var req = labels?.ToArray() ?? Array.Empty<string>();
         await using var cmd = _ds.CreateCommand($"""
-            SELECT source, body, domain, labels, 1 - (embedding <=> @q::vector) AS score
+            SELECT source, body, domain, labels, 1 - (embedding <=> @q::vector) AS score, id
             FROM {Chunks}
             WHERE (@dom IS NULL OR domain = @dom)
               AND (cardinality(@req) = 0 OR labels @> @req)
@@ -168,7 +168,7 @@ public sealed class PostgresVectorStore : IVectorStore
         {
             var labelsOut = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
             hits.Add(new StoredHit(r.GetString(0), r.GetString(1),
-                r.IsDBNull(2) ? null : r.GetString(2), labelsOut, r.GetDouble(4)));
+                r.IsDBNull(2) ? null : r.GetString(2), labelsOut, r.GetDouble(4), r.GetGuid(5).ToString()));
         }
         return hits;
     }
@@ -182,13 +182,13 @@ public sealed class PostgresVectorStore : IVectorStore
     public async Task<IReadOnlyList<StoredChunk>> EnumerateAsync(CancellationToken ct = default)
     {
         var list = new List<StoredChunk>();
-        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels, ingested_at_utc FROM {Chunks}");
+        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels, ingested_at_utc, id FROM {Chunks}");
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt));
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString()));
         }
         return list;
     }
@@ -199,6 +199,48 @@ public sealed class PostgresVectorStore : IVectorStore
         cmd.Parameters.AddWithValue("s", source);
         cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
         return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> DeleteByDomainAsync(string domain, CancellationToken ct = default)
+    {
+        await using var cmd = _ds.CreateCommand($"DELETE FROM {Chunks} WHERE domain=@dom");
+        cmd.Parameters.AddWithValue("dom", domain);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> DeleteDomainAsync(string name, CancellationToken ct = default)
+    {
+        await using var cmd = _ds.CreateCommand($"DELETE FROM {Domains} WHERE name=@n");
+        cmd.Parameters.AddWithValue("n", name);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) > 0;
+    }
+
+    public async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+    {
+        await using var cmd = _ds.CreateCommand($"""
+            SELECT source, body, domain, labels, ingested_at_utc, id
+            FROM {Chunks}
+            WHERE source=@s AND (@dom IS NULL OR domain=@dom) AND (@cur::uuid IS NULL OR id > @cur::uuid)
+            ORDER BY id
+            LIMIT @take
+            """);
+        cmd.Parameters.AddWithValue("s", source);
+        cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("cur", (object?)cursor ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("take", take);
+
+        var items = new List<StoredChunk>();
+        string? lastId = null;
+        await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var labels = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
+            var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
+            lastId = r.GetGuid(5).ToString();
+            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, lastId));
+        }
+        string? next = items.Count == take ? lastId : null;
+        return new ChunkPage(items, next);
     }
 
     public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)

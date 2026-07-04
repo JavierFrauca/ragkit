@@ -174,7 +174,7 @@ public sealed class SqlServerVectorStore : IVectorStore
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new SqlCommand($"""
             SELECT TOP(@top) source, body, domain, labels,
-                   1 - VECTOR_DISTANCE('cosine', CAST(@q AS vector({_dim})), embedding) AS score
+                   1 - VECTOR_DISTANCE('cosine', CAST(@q AS vector({_dim})), embedding) AS score, id
             FROM {Chunks}
             WHERE (@dom IS NULL OR domain=@dom)
             ORDER BY VECTOR_DISTANCE('cosine', CAST(@q AS vector({_dim})), embedding)
@@ -191,7 +191,7 @@ public sealed class SqlServerVectorStore : IVectorStore
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
             if (req.Count > 0 && !req.All(l => labelsOut.Contains(l, StringComparer.OrdinalIgnoreCase))) continue;
             hits.Add(new StoredHit(r.GetString(0), r.GetString(1),
-                r.IsDBNull(2) ? null : r.GetString(2), labelsOut, r.GetDouble(4)));
+                r.IsDBNull(2) ? null : r.GetString(2), labelsOut, r.GetDouble(4), r.GetGuid(5).ToString()));
             if (hits.Count >= k) break;
         }
         return hits;
@@ -208,14 +208,14 @@ public sealed class SqlServerVectorStore : IVectorStore
     {
         var list = new List<StoredChunk>();
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels, ingested_at_utc FROM {Chunks}", con);
+        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels, ingested_at_utc, id FROM {Chunks}", con);
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>()
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt));
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString()));
         }
         return list;
     }
@@ -228,6 +228,53 @@ public sealed class SqlServerVectorStore : IVectorStore
         cmd.Parameters.AddWithValue("@s", source);
         cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
         return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> DeleteByDomainAsync(string domain, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand($"DELETE FROM {Chunks} WHERE domain=@dom", con);
+        cmd.Parameters.AddWithValue("@dom", domain);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> DeleteDomainAsync(string name, CancellationToken ct = default)
+    {
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand($"DELETE FROM {Domains} WHERE name=@n", con);
+        cmd.Parameters.AddWithValue("@n", name);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) > 0;
+    }
+
+    public async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+    {
+        // Keyset pagination ordered by id: correct (no duplicates, no gaps) regardless
+        // of GUID ordering semantics, as long as the order is stable across calls.
+        await using var con = await OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new SqlCommand($"""
+            SELECT TOP(@take) source, body, domain, labels, ingested_at_utc, id
+            FROM {Chunks}
+            WHERE source=@s AND (@dom IS NULL OR domain=@dom) AND (@cur IS NULL OR id > @cur)
+            ORDER BY id
+            """, con);
+        cmd.Parameters.AddWithValue("@take", take);
+        cmd.Parameters.AddWithValue("@s", source);
+        cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@cur", cursor is null ? DBNull.Value : Guid.Parse(cursor));
+
+        var items = new List<StoredChunk>();
+        string? lastId = null;
+        await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var labels = r.IsDBNull(3) ? Array.Empty<string>()
+                : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
+            var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
+            lastId = r.GetGuid(5).ToString();
+            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, lastId));
+        }
+        string? next = items.Count == take ? lastId : null;
+        return new ChunkPage(items, next);
     }
 
     public async Task<string?> GetCatalogEntryAsync(string kind, string key, CancellationToken ct = default)

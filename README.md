@@ -236,6 +236,18 @@ var r = await rag.IngestFileIfChangedAsync("iva.txt", domain: "fiscal");
 // Carpeta completa: un IngestResult por fichero según se completa (progreso incremental).
 await foreach (var res in rag.IngestFolderAsync("./docs", domain: "fiscal", recursive: true))
     Console.WriteLine($"{res.Source}: {res.Outcome}");
+
+// Borrado de un dominio completo: sus chunks + la propia definición del dominio.
+int borradosDominio = await rag.RemoveDomainAsync("fiscal");
+
+// Listado paginado de los chunks de un documento (no carga la colección entera).
+string? cursor = null;
+do
+{
+    var page = await rag.ListChunksAsync("iva.txt", domain: "fiscal", take: 50, cursor: cursor);
+    foreach (var chunk in page.Items) Console.WriteLine($"{chunk.Id}: {chunk.Text[..30]}…");
+    cursor = page.NextCursor;
+} while (cursor is not null);
 ```
 
 **Catálogo genérico**: además de perfiles/guardarails (tipados), el store expone un
@@ -257,7 +269,7 @@ nada (no-op), sin romper el contrato.
 - ✅ Auto-clasificación con **confianza + umbral + rechazo**.
 - ✅ **Enrutado en query-time + perfiles (lentes) + guardarails** (entrada siempre activo; salida también en streaming vía buffer), aplicados también en el **modo agéntico**; **CRUD + persistencia** de perfiles/guardarails en los 4 backends.
 - ✅ Cliente chat compatible OpenAI (solo `HttpClient`); recuperación acotada por dominio/etiquetas; troceado por frontera.
-- ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), inventario agregado (`ListDocumentsAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
+- ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), borrado de dominio completo (`RemoveDomainAsync`), inventario agregado (`ListDocumentsAsync`), listado paginado de chunks por documento con id (`ListChunksAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
@@ -294,5 +306,5 @@ así el motor interno se sustituye sin romper a quien lo usa.
 
 ## Build
 ```bash
-dotnet test   # 55 tests, sin red (net8.0 y net10.0)
+dotnet test   # 59 tests, sin red (net8.0 y net10.0)
 ```

@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace RagKit.Internal;
 
@@ -32,14 +32,22 @@ internal sealed class LexicalIndex
 
     /// <summary>Remove every entry indexed under <paramref name="source"/> (used after
     /// <c>IVectorStore.DeleteBySourceAsync</c> so hybrid search doesn't keep serving stale hits).</summary>
-    public void RemoveBySource(string source)
+    public void RemoveBySource(string source) =>
+        RemoveWhere(e => string.Equals(e.Chunk.Source, source, StringComparison.Ordinal));
+
+    /// <summary>Remove every entry indexed under <paramref name="domain"/> (used after
+    /// <c>IVectorStore.DeleteByDomainAsync</c> so hybrid search doesn't keep serving stale hits).</summary>
+    public void RemoveByDomain(string domain) =>
+        RemoveWhere(e => string.Equals(e.Chunk.Domain, domain, StringComparison.OrdinalIgnoreCase));
+
+    private void RemoveWhere(Func<Entry, bool> predicate)
     {
         lock (_lock)
         {
             for (int i = _entries.Count - 1; i >= 0; i--)
             {
                 var e = _entries[i];
-                if (!string.Equals(e.Chunk.Source, source, StringComparison.Ordinal)) continue;
+                if (!predicate(e)) continue;
                 foreach (var t in e.Tf.Keys)
                 {
                     if (!_df.TryGetValue(t, out var df)) continue;

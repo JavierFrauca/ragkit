@@ -135,7 +135,7 @@ public sealed class QdrantVectorStore : IVectorStore
             hits.Add(new StoredHit(
                 Str(pay, "source"), Str(pay, "text"),
                 pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labelList, p.GetProperty("score").GetDouble()));
+                labelList, p.GetProperty("score").GetDouble(), IdOf(p)));
         }
         return hits;
     }
@@ -162,7 +162,7 @@ public sealed class QdrantVectorStore : IVectorStore
                 : new List<string>();
             outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
                 pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labels, ParseIngestedAt(pay)));
+                labels, ParseIngestedAt(pay), IdOf(p)));
         }
         return outList;
     }
@@ -171,6 +171,14 @@ public sealed class QdrantVectorStore : IVectorStore
         => pay.TryGetProperty("ingestedAtUtc", out var t) && t.ValueKind == JsonValueKind.String
             && DateTime.TryParse(t.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
             ? dt : default;
+
+    /// <summary>A point's own id, as Qdrant echoes it back — string (UUID) or number, both
+    /// stringified so callers get a uniform opaque identifier.</summary>
+    private static string IdOf(JsonElement point)
+    {
+        var id = point.GetProperty("id");
+        return id.ValueKind == JsonValueKind.String ? id.GetString() ?? "" : id.GetRawText();
+    }
 
     // Generic consumer catalog: distinct "catalog:" id prefix so a caller-chosen
     // kind/key (e.g. kind="domain") can never collide with the internal domain/label/
@@ -211,6 +219,68 @@ public sealed class QdrantVectorStore : IVectorStore
             new { filter }, ct).ConfigureAwait(false);
         await ReadAsync(delResp, ct).ConfigureAwait(false);
         return count;
+    }
+
+    public async Task<int> DeleteByDomainAsync(string domain, CancellationToken ct = default)
+    {
+        var filter = new { must = new[] { new { key = "domain", match = new { value = domain } } } };
+
+        int count;
+        using (var countResp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/count",
+            new { filter, exact = true }, ct).ConfigureAwait(false))
+        {
+            var countJson = await ReadAsync(countResp, ct).ConfigureAwait(false);
+            count = countJson.RootElement.GetProperty("result").GetProperty("count").GetInt32();
+            if (count == 0) return 0;
+        }
+
+        using var delResp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/delete?wait=true",
+            new { filter }, ct).ConfigureAwait(false);
+        await ReadAsync(delResp, ct).ConfigureAwait(false);
+        return count;
+    }
+
+    public async Task<bool> DeleteDomainAsync(string name, CancellationToken ct = default)
+    {
+        var id = Uuid("domain:" + name);
+        var existing = await GetPointPayloadAsync(_catalog, id, ct).ConfigureAwait(false);
+        if (existing is null) return false;
+
+        using var resp = await _http.PostAsJsonAsync($"collections/{_catalog}/points/delete?wait=true",
+            new { points = new[] { id } }, ct).ConfigureAwait(false);
+        await ReadAsync(resp, ct).ConfigureAwait(false);
+        return true;
+    }
+
+    public async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
+    {
+        var must = new List<object> { new { key = "source", match = new { value = source } } };
+        if (domain != null) must.Add(new { key = "domain", match = new { value = domain } });
+
+        object body = cursor is null
+            ? new { filter = new { must }, limit = take, with_payload = true }
+            : new { filter = new { must }, limit = take, with_payload = true, offset = cursor };
+
+        using var resp = await _http.PostAsJsonAsync($"collections/{_chunks}/points/scroll", body, ct).ConfigureAwait(false);
+        var json = await ReadAsync(resp, ct).ConfigureAwait(false);
+        var result = json.RootElement.GetProperty("result");
+
+        var items = new List<StoredChunk>();
+        foreach (var p in result.GetProperty("points").EnumerateArray())
+        {
+            var pay = p.GetProperty("payload");
+            var labels = pay.TryGetProperty("labels", out var la) && la.ValueKind == JsonValueKind.Array
+                ? la.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
+                : new List<string>();
+            items.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
+                pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
+                labels, ParseIngestedAt(pay), IdOf(p)));
+        }
+
+        string? next = result.TryGetProperty("next_page_offset", out var npo) && npo.ValueKind != JsonValueKind.Null
+            ? (npo.ValueKind == JsonValueKind.String ? npo.GetString() : npo.GetRawText())
+            : null;
+        return new ChunkPage(items, next);
     }
 
     // --- REST helpers --------------------------------------------------------

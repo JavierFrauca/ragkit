@@ -4,6 +4,29 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.3.0] - 2026-07-03
+
+Borrado de dominio completo e ids de chunk con listado paginado por documento.
+Issues [#12](https://github.com/JavierFrauca/ragkit/issues/12)/[#13](https://github.com/JavierFrauca/ragkit/issues/13).
+
+### Añadido
+- **Borrado de dominio completo** (`RagClient.RemoveDomainAsync`, `IVectorStore.DeleteDomainAsync`/`DeleteByDomainAsync`)
+  en los 4 backends: borra todos los chunks de un dominio y la propia definición
+  del dominio en una sola llamada; limpia también el índice léxico
+  (`LexicalIndex.RemoveByDomain`). No toca etiquetas ni perfiles/guardarails
+  del dominio. (#12)
+- **Id de chunk + listado paginado por documento** (`StoredChunk.Id`/`StoredHit.Id`,
+  `IVectorStore.ListChunksAsync`/`RagClient.ListChunksAsync`) en los 4 backends:
+  cada chunk expone ahora el id real del backend (antes solo existía en Qdrant y
+  nunca se leía de vuelta); `ListChunksAsync(source, domain?, take, cursor?)`
+  devuelve una página de chunks con cursor para la siguiente, sin traer la
+  colección entera a memoria — scroll nativo en Qdrant, keyset pagination por
+  `id` en SQL Server/Postgres, offset en memoria. (#13)
+
+### Cambiado
+- `StoredHit`/`StoredChunk` incorporan `Id` como último parámetro con valor por
+  defecto (`""`) — no rompe construcciones posicionales existentes.
+
 ## [0.2.1] - 2026-07-03
 
 ### Corregido
