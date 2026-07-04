@@ -4,6 +4,19 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.7.1] - 2026-07-04
+
+### Corregido
+- Comentario de clase obsoleto en `SqlServerVectorStore` (describía el
+  filtrado de etiquetas en proceso ya eliminado en esta sesión).
+- `AddChunksAsync` en `SqlServerVectorStore`/`PostgresVectorStore` usa ahora
+  `Enumerable.Chunk<T>` en vez de un bucle manual de `Skip`/`Take`
+  duplicado en ambos ficheros.
+- `RagKit.Dashboard`: `app.js` pide confirmación antes de borrar un
+  guardarail o un perfil, igual que ya hacía al borrar dominios/documentos
+  (verificado manualmente en navegador).
+  ([#33](https://github.com/JavierFrauca/ragkit/issues/33))
+
 ## [0.7.0] - 2026-07-04
 
 ### Cambiado (breaking)
