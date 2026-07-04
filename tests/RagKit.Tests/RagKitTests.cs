@@ -1271,6 +1271,52 @@ public class RagKitTests
         Assert.Equal(2, await rag.ChunkCountAsync());
     }
 
+    [Fact]
+    public async Task IngestIfChangedAsync_does_not_collide_manifest_keys_across_differently_split_domain_and_source()
+    {
+        // Regression: manifestKey used to be a naive $"{domain}:{source}" join, so two
+        // distinct (domain, source) pairs whose concatenation produces the identical
+        // string (domain="a:b", source="c" vs domain="a", source="b:c" both join to
+        // "a:b:c") shared the same manifest entry and silently overwrote each other's hash.
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
+        await rag.DefineDomainAsync("a:b");
+        await rag.DefineDomainAsync("a");
+
+        await rag.IngestIfChangedAsync("contenido uno", "c", domain: "a:b");
+        var result = await rag.IngestIfChangedAsync("contenido dos, distinto del anterior", "b:c", domain: "a");
+
+        Assert.Equal(IngestOutcome.Ingested, result.Outcome); // must not read as Unchanged due to key collision
+        Assert.Equal(2, await rag.ChunkCountAsync());
+    }
+
+    [Fact]
+    public async Task IngestIfChangedAsync_reingests_after_a_restart_wiped_the_chunks_but_not_the_manifest()
+    {
+        // Regression: InMemoryVectorStore persists its catalog (including the ingest
+        // manifest hash) to disk, but chunks are in-memory only. Trusting the surviving
+        // hash alone would report Unchanged even though the "restarted" store is empty.
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-restart-" + Guid.NewGuid().ToString("N"));
+        var embedder = new LocalEmbedder();
+
+        var store1 = new InMemoryVectorStore(dir);
+        await store1.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag1 = new RagClient(new RagOptions { AutoClassify = false }, embedder, store1, new FakeChat("ok"), new FakeChat("{}"));
+        await rag1.DefineDomainAsync("docs");
+        await rag1.IngestIfChangedAsync("contenido estable", "d.txt", domain: "docs");
+        Assert.Equal(1, await rag1.ChunkCountAsync());
+
+        // Simulate a process restart against the same dataPath: a fresh store/RagClient,
+        // same on-disk manifest, but an empty in-memory chunk list.
+        var store2 = new InMemoryVectorStore(dir);
+        await store2.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag2 = new RagClient(new RagOptions { AutoClassify = false }, embedder, store2, new FakeChat("ok"), new FakeChat("{}"));
+        Assert.Equal(0, await rag2.ChunkCountAsync()); // confirms the chunks really didn't survive
+
+        var result = await rag2.IngestIfChangedAsync("contenido estable", "d.txt", domain: "docs");
+        Assert.Equal(IngestOutcome.Ingested, result.Outcome); // must not be Unchanged
+        Assert.Equal(1, await rag2.ChunkCountAsync());
+    }
+
     // --- FR-04: folder ingestion ----------------------------------------------
 
     [Fact]
