@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Solo net10.0: a diferencia del core (net10.0;net8.0 heredado de
+         Directory.Build.props), este paquete está acoplado a ASP.NET Core, cuyo
+         runtime 8.0.x no siempre está disponible junto al 10.0.x en un mismo
+         entorno de desarrollo/CI — no hay razón de negocio para el soporte tan
+         amplio que sí tiene la librería core. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <Description>Panel de mantenimiento opt-in para RagKit: dominios, etiquetas, documentos, chunks paginados, guardarails, perfiles, prompts, ingesta y un playground de preguntas — todo sobre la API pública de RagClient. Sin autenticación propia (ver README); actívalo con MapRagDashboard(...).</Description>
+    <PackageTags>rag;ragkit;dashboard;admin;maintenance-panel;aspnetcore</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Solo necesitamos tipar contra ASP.NET Core (IEndpointRouteBuilder,
+         minimal APIs); no somos el host, así que basta con el FrameworkReference
+         en vez de Microsoft.NET.Sdk.Web. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\RagKit\RagKit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Assets del frontend embebidos como recursos del ensamblado: el consumidor
+         no necesita ningún build step de frontend, solo referenciar el paquete. -->
+    <EmbeddedResource Include="wwwroot\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

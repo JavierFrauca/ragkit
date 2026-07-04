@@ -3,6 +3,7 @@
     <Project Path="examples/MiniRag/MiniRag.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/RagKit.Dashboard/RagKit.Dashboard.csproj" />
     <Project Path="src/RagKit.Extractors/RagKit.Extractors.csproj" />
     <Project Path="src/RagKit.Mcp/RagKit.Mcp.csproj" />
     <Project Path="src/RagKit.Onnx/RagKit.Onnx.csproj" />
@@ -11,6 +12,7 @@
     <Project Path="src/RagKit/RagKit.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/RagKit.Dashboard.Tests/RagKit.Dashboard.Tests.csproj" />
     <Project Path="tests/RagKit.Tests/RagKit.Tests.csproj" />
   </Folder>
 </Solution>
