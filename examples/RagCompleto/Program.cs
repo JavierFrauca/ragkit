@@ -29,7 +29,17 @@ var options = new RagOptions
     AutoClassify = true,
     MultiProfile = false, // un perfil por dominio en este ejemplo: no hay solape que fusionar
     GuardrailPiiCheck = true, // bloquea preguntas que lleven datos personales (email, IBAN, DNI…)
+    // Reranker de segunda etapa: el propio tier-2 reordena los candidatos por
+    // relevancia (una llamada extra por pregunta) en vez de un cross-encoder local.
+    // Un solo booleano — sin descargar ningún modelo, y multilingüe gratis porque
+    // reusa el mismo tier-2 que ya clasifica/enruta/guardarraila en castellano.
+    EnableLlmRerank = true,
 };
+
+// Alternativa al embedder de Ollama de arriba, para corpus donde la búsqueda
+// semántica en castellano necesite más calidad: descarga y cachea un modelo
+// ONNX multilingüe la primera vez (RagKit.Onnx), sin tocar nada más:
+//   options.Embedder = await RagKit.Onnx.OnnxEmbedding.UseMultilingualDefaultModelAsync();
 
 // Un perfil ("lente") por dominio — el tier-2 lo selecciona al enrutar la pregunta.
 options.Profiles.Add(new ProfileInfo("asesor", Domains.Fiscal, "asesoría fiscal y tributaria",

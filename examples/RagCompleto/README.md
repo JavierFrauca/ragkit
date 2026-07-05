@@ -12,10 +12,14 @@ real de varias páginas. Para el arranque mínimo, mira
   `abogado` (legal) — el tier-2 los selecciona al enrutar la pregunta.
 - **Guardarails**: una regla de entrada, una de salida, y el check
   determinista de PII (`GuardrailPiiCheck`) activado.
+- **Reranker por LLM** (`EnableLlmRerank = true`): el propio tier-2 reordena
+  los candidatos por relevancia antes de responder — un booleano, sin
+  descargar ningún modelo de rerank aparte.
 - **Chat multi-turno con memoria real** (`RagClient.StartChat`, no historial
-  manual) — y un **modo Agente** alternable (`AskAgentAsync` con
-  `AgentToolScope.SearchOnly`: el modelo decide si busca, una tool por
-  pregunta, sin memoria entre turnos porque hoy no hay una sesión agéntica).
+  manual) — y un **modo Agente** alternable (`AskAgentStreamAsync` con
+  `AgentToolScope.SearchOnly`: el modelo decide si busca, se ve la actividad
+  de la herramienta en vivo, respuesta en streaming, sin memoria entre turnos
+  porque hoy no hay una sesión agéntica).
 - **Página de ingesta separada** (`/ingesta`): texto o fichero (PDF/DOCX/TXT),
   dominio explícito o auto-clasificado.
 - **`RagKit.Dashboard` montado en `/rag-admin`**: gestión de dominios,
@@ -36,7 +40,10 @@ dotnet run --project examples/RagCompleto
 # abre http://localhost:5119/rag-admin/   (panel de administración)
 ```
 LLM/embedder se configuran en `appsettings.json` (sección `"Rag"`), igual que
-en `RagSimple` — apuntar a un proveedor en la nube es editar el fichero.
+en `RagSimple` — apuntar a un proveedor en la nube es editar el fichero. Si la
+búsqueda semántica en castellano con Ollama no basta, `Program.cs` deja
+comentada la alternativa: un embedder ONNX multilingüe zero-config
+(`RagKit.Onnx.OnnxEmbedding.UseMultilingualDefaultModelAsync()`).
 
 ## Qué verás
 - **Chat** (`/`): elige un dominio o deja que se enrute solo; alterna entre

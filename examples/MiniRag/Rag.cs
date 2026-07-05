@@ -104,6 +104,9 @@ public sealed class Rag
             OneShotPrompt = SystemPrompt,
             // 5) Una lente por pregunta (tono), no varias a la vez.
             MultiProfile = false,
+            // 6) (Opcional) el propio tier-2 reordena los resultados por relevancia
+            //    antes de responder — un booleano, sin descargar ningún modelo:
+            // EnableLlmRerank = true,
         };
         // Perfiles ("lentes"): el tier-2 elige uno según la pregunta (query routing).
         foreach (var lens in Lenses) opts.Profiles.Add(lens);

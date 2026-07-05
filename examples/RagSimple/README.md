@@ -36,6 +36,14 @@ Para usar un LLM en la nube (DeepSeek, OpenAI…) en vez de Ollama, edita
 - **Panel ②** — pregunta y recibe la respuesta **en streaming** con **citas**
   a los fragmentos usados.
 
+## Dos opciones de una línea (comentadas en `Program.cs`)
+- `EnableLlmRerank = true` — el propio tier-2 reordena los resultados por
+  relevancia antes de responder. Sin descargar ningún modelo.
+- `Embedder = await RagKit.Onnx.OnnxEmbedding.UseMultilingualDefaultModelAsync()`
+  — si la búsqueda semántica en castellano con Ollama no basta, descarga y
+  cachea un modelo ONNX multilingüe la primera vez (requiere referenciar
+  `RagKit.Onnx`).
+
 `RagClient` se registra como singleton ya inicializado en `Program.cs` (sin
 esperar a la primera visita a la página) y se inyecta directamente en
 `Home.razor` — no hay ninguna clase intermedia que envuelva la API.
