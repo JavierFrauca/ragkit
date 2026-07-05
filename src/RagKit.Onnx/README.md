@@ -10,10 +10,21 @@ como multilingual-e5). Incluye además un **reranker cross-encoder** local
 ```csharp
 using RagKit.Onnx;
 
+// Zero-config: descarga y cachea el modelo la primera vez.
+var opts = new RagOptions
+{
+    Embedder = await OnnxEmbedding.UseDefaultModelAsync(),              // all-MiniLM-L6-v2 (inglés)
+    // Embedder = await OnnxEmbedding.UseMultilingualDefaultModelAsync(), // multilingual-e5-small (~100 idiomas, incl. español)
+};
+```
+
+O apuntando a un modelo propio ya descargado:
+
+```csharp
 OnnxEmbedding.Enable();
 var opts = new RagOptions {
     Embedder = new EmbedderConfig { Kind = EmbedderKind.Onnx, Model = "C:/models/all-MiniLM-L6-v2" }
-    // la carpeta contiene model.onnx + vocab.txt
+    // la carpeta contiene model.onnx + vocab.txt (o sentencepiece.bpe.model)
 };
 ```
 

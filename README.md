@@ -325,9 +325,16 @@ literales (códigos, "art. 14", años); el índice BM25 vive en RagKit y se reco
 del store al iniciar. Un **reranker** opcional (`IReranker` + `SetReranker`) re-puntúa
 los candidatos antes del top-k; `RagKit.Onnx` incluye **`OnnxCrossEncoderReranker`**
 (cross-encoder local, p. ej. `ms-marco-MiniLM`, que puntúa cada par pregunta/pasaje).
+Nota: el reranker es WordPiece/inglés por ahora — en corpus no ingleses conviene
+priorizar un embedder multilingüe (`UseMultilingualDefaultModelAsync()`, arriba)
+antes que forzar este reranker, ya que un cross-encoder fuera de su idioma puede
+empeorar el orden en vez de mejorarlo.
 
-**Hecho además:** embeddings **ONNX locales** (`RagKit.Onnx`) y **por API/Ollama**
-(`nomic-embed-text`), **4 conectores reales** (InMemory/Qdrant/Postgres/SQL Server 2025),
+**Hecho además:** embeddings **ONNX locales** (`RagKit.Onnx`, con
+`UseDefaultModelAsync()` en inglés y `UseMultilingualDefaultModelAsync()` para
+~100 idiomas incl. español — ambos zero-config, descargan y cachean el modelo)
+y **por API/Ollama** (`nomic-embed-text`), **4 conectores reales**
+(InMemory/Qdrant/Postgres/SQL Server 2025),
 **bucle de agente** + herramientas internas + **MCP externo** (`RagKit.Mcp`),
 **extractores PDF/DOCX** (`RagKit.Extractors`), **streaming de respuestas** (SSE),
 **robustez** (reintentos/timeouts), **CI**, y **empaquetado NuGet listo para publicar**
