@@ -4,6 +4,32 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.0.0] - 2026-07-05
+
+Primera versión realmente publicada en NuGet.org (vía Trusted Publishing/OIDC
+— sin claves de API de larga duración). La entrada "Primera versión publicada
+en NuGet" de la 0.1.0, más abajo, era aspiracional: el pipeline de release
+nunca se había disparado hasta este tag.
+
+### Por qué 1.0 ahora
+No hay ningún cambio de funcionalidad respecto a 0.11.0 — esta versión marca
+un compromiso de estabilidad, no una nueva feature:
+- **Superficie pública estable**: un solo breaking change documentado en las
+  11 versiones anteriores (`RemoveDomainAsync`, 0.7.0), siempre justificado y
+  con el resto de cambios aditivos (parámetros opcionales, DIM en interfaces).
+- **Conjunto de capacidades ya redondo**: fachada de dos tiers, enrutado +
+  perfiles + guardarails, modo agéntico (con y sin streaming), reranking
+  (cross-encoder ONNX y por LLM), embeddings multilingües, 4 backends reales,
+  `RagKit.Dashboard`, y tres ejemplos Blazor de referencia.
+- **190 tests en verde**, issues de higiene cerradas, documentación
+  reconciliada con el estado real del código (ver README: "Estado y
+  roadmap").
+
+### Conocido, sin resolver todavía (no bloquea 1.0)
+La CI actual corre la suite offline: los tests de integración contra
+Qdrant/SQL Server/Postgres se auto-omiten si el servicio no está disponible,
+no hay validación real en CI (docker-compose) todavía. Ver README.
+
 ## [0.11.0] - 2026-07-05
 
 ### Añadido
