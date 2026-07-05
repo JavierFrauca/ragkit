@@ -4,6 +4,22 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.8.1] - 2026-07-05
+
+### Cambiado
+- **`RagKit.Dashboard`: cierre de Milestones 5-6 del plan de producción** —
+  verificado (`dotnet pack` + inspección de la DLL) que `index.html`/`app.js`
+  quedan embebidos correctamente dentro de `RagKit.Dashboard.dll` en el
+  `.nupkg`, tal y como espera `Assembly.GetManifestResourceStream`. El test
+  de `RequireAuthorization` pasa de comprobar solo que encadenarlo compila a
+  verificar con un esquema de auth mínimo que una petición sin autenticar
+  recibe `401` y una autenticada recibe `200`. Se evaluó añadir el Dashboard
+  al ejemplo `MiniRag` (paso opcional del plan) pero no se hizo: `Rag.cs`
+  inicializa el `RagClient` de forma perezosa desde la UI Blazor, no en
+  `Program.cs`, así que no era el cambio de "una línea" que planteaba el
+  plan sin tocar su arquitectura de inicialización.
+  ([#40](https://github.com/JavierFrauca/ragkit/issues/40))
+
 ## [0.8.0] - 2026-07-04
 
 Acota el modo agéntico para poder exponerlo en tráfico público/no autenticado
