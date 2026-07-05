@@ -4,6 +4,32 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Corregido
+- **`OnnxEmbedding.UseMultilingualDefaultModelAsync()` (multilingual-e5-small) no
+  aplicaba el prefijo `query:`/`passage:` que la familia e5 exige** (bi-encoder
+  asimétrico: sin él, los vectores de pregunta y pasaje no se alinean como el
+  modelo aprendió, degradando el recall de forma sistemática e independiente del
+  reranking). `OnnxEmbedder` ahora soporta un prefijo por rol (`useQueryPassagePrefix`),
+  aplicado automáticamente por ese preset — `EmbedAsync` (siempre la pregunta) recibe
+  `query:`, `EmbedBatchAsync` (siempre los chunks a indexar) recibe `passage:`.
+  Quien ya tenga un índice ingestado con este preset debe reingestar para que el
+  fix surta efecto (los vectores existentes se calcularon sin el prefijo).
+
+### Añadido
+- **`OnnxEmbedding.UseBgeM3DefaultModelAsync()`** — tercer preset zero-config para
+  `RagKit.Onnx`: BGE-M3 (solo su embedding denso, 1024-dim), una alternativa
+  multilingüe más grande que `multilingual-e5-small` con mejor discriminación
+  semántica en corpus no ingleses (medido informalmente: ~8x más margen entre
+  pasajes relevantes e irrelevantes en un pequeño set de casos en español), a
+  cambio de más peso de descarga y latencia en CPU. No necesita prefijo query:/passage:.
+- **`OnnxEmbedder` ahora soporta pooling configurable** (`PoolingStrategy.Mean`/`Cls`)
+  y detecta automáticamente si el grafo ONNX ya expone una salida pooleada (2-D)
+  junto a la cruda per-token (3-D), usando la del propio modelo cuando existe en
+  vez de recalcularla — así BGE-M3 (CLS-pooling) convive con MiniLM/e5 (mean-pooling)
+  sin bifurcar el código de inferencia.
+
 ## [1.0.0] - 2026-07-05
 
 Primera versión realmente publicada en NuGet.org (vía Trusted Publishing/OIDC

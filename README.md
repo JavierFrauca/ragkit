@@ -134,10 +134,21 @@ Los **cuatro** backends están **implementados y testeados contra servicios real
 El **embedder** también va tras contrato (`IEmbedder`) + factory (`EmbedderKind`):
 - **Local** (hash, cero setup) por defecto.
 - **ONNX local** (`RagKit.Onnx`, `OnnxEmbedding.Enable()`): modelo sentence-transformers
-  in-process — mean-pooling + L2; semántico y privado. `EmbedderConfig.Model` = carpeta
-  con `model.onnx` y el tokenizer: **WordPiece** (`vocab.txt`, p. ej. all-MiniLM-L6-v2) o
-  **SentencePiece** (`sentencepiece.bpe.model`/`spiece.model`/`tokenizer.model`, p. ej.
-  **multilingual-e5** para corpus multilingües).
+  in-process — pooling (mean o CLS, según el modelo) + L2; semántico y privado.
+  `EmbedderConfig.Model` = carpeta con `model.onnx` y el tokenizer: **WordPiece**
+  (`vocab.txt`, p. ej. all-MiniLM-L6-v2) o **SentencePiece**
+  (`sentencepiece.bpe.model`/`spiece.model`/`tokenizer.model`, p. ej. multilingual-e5
+  o BGE-M3). Tres presets zero-config (descargan y cachean el modelo la primera vez):
+  - `UseDefaultModelAsync()` — all-MiniLM-L6-v2, inglés, 384-dim.
+  - `UseMultilingualDefaultModelAsync()` — multilingual-e5-small, ~100 idiomas incl.
+    español, 384-dim. Antepone automáticamente el prefijo `query:`/`passage:` que
+    esta familia de modelos exige (asimétrico: sin él, la calidad de recuperación
+    se degrada de forma sistemática — no es opcional, es parte del contrato del modelo).
+  - `UseBgeM3DefaultModelAsync()` — BGE-M3 (solo su embedding denso; no expone
+    sparse/ColBERT), 1024-dim, más grande y con mejor discriminación semántica que
+    e5-small en corpus multilingües, a cambio de más peso/latencia en CPU. No
+    necesita prefijo. Pooling CLS resuelto automáticamente (o tomado directamente
+    de una segunda salida ya pooleada del grafo ONNX, si el export la expone).
 - **API compatible OpenAI** (`EmbedderKind.OpenAi`, de fábrica): sirve para OpenAI y
   para **servidores locales como Ollama**. P. ej. **Ollama + nomic-embed-text**:
   ```csharp
@@ -336,8 +347,9 @@ los candidatos antes del top-k. Dos opciones ya incluidas:
   pregunta (una sola, no una por candidato). Opt-in, `false` por defecto.
 
 **Hecho además:** embeddings **ONNX locales** (`RagKit.Onnx`, con
-`UseDefaultModelAsync()` en inglés y `UseMultilingualDefaultModelAsync()` para
-~100 idiomas incl. español — ambos zero-config, descargan y cachean el modelo)
+`UseDefaultModelAsync()` en inglés, `UseMultilingualDefaultModelAsync()` para
+~100 idiomas incl. español y `UseBgeM3DefaultModelAsync()` como alternativa
+multilingüe más grande — los tres zero-config, descargan y cachean el modelo)
 y **por API/Ollama** (`nomic-embed-text`), **4 conectores reales**
 (InMemory/Qdrant/Postgres/SQL Server 2025),
 **bucle de agente** + herramientas internas + **MCP externo** (`RagKit.Mcp`),
