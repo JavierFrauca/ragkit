@@ -4,6 +4,26 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.10.0] - 2026-07-05
+
+### Añadido
+- **`RagKit.Onnx`: `OnnxEmbedding.UseMultilingualDefaultModelAsync()`** — mismo
+  patrón zero-config que `UseDefaultModelAsync()` (descarga y cachea el modelo
+  la primera vez), pero con `multilingual-e5-small` (SentencePiece, ~100
+  idiomas incl. español) en vez del `all-MiniLM-L6-v2` (inglés) por defecto.
+  Reutiliza el soporte SentencePiece que `OnnxEmbedder` ya tenía — no hay
+  lógica de tokenización nueva.
+
+### Nota (sin cambio de código)
+- Se documentó que `OnnxCrossEncoderReranker` sigue siendo WordPiece/inglés
+  por ahora (p. ej. `ms-marco-MiniLM`): en corpus no ingleses un cross-encoder
+  fuera de su idioma puede empeorar el orden de resultados en vez de
+  mejorarlo. Un reranker multilingüe queda anotado como mejora futura
+  (issue #47) — requiere soportar el esquema de codificación de pares
+  RoBERTa/XLM-R (doble separador, sin segment ids), distinto del BERT actual,
+  y se prefirió no apresurar ese cambio dado el riesgo de reproducir el mismo
+  tipo de bug que motivó esta mejora.
+
 ## [0.9.0] - 2026-07-05
 
 ### Añadido

@@ -1,4 +1,4 @@
-using Microsoft.ML.OnnxRuntime;
+﻿using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Microsoft.ML.Tokenizers;
 using RagKit;
@@ -24,27 +24,49 @@ public static class OnnxEmbedding
         ("https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/vocab.txt", "vocab.txt"),
     };
 
+    // ~100-language sentence-transformer (SentencePiece) fine-tuned for retrieval;
+    // meaningfully better than the English-only default above on non-English corpora
+    // (e.g. Spanish) — the quantized export keeps the download small. 384-dim.
+    private const string MultilingualModelName = "multilingual-e5-small";
+    private static readonly (string Url, string File)[] MultilingualModelFiles =
+    {
+        ("https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/onnx/model_quantized.onnx", "model.onnx"),
+        ("https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/sentencepiece.bpe.model", "sentencepiece.bpe.model"),
+    };
+
     /// <summary>
     /// The zero-config "real" embedder: downloads a small sentence-transformers ONNX
     /// model into a local cache the first time (then reused offline) and returns an
     /// <see cref="EmbedderConfig"/> ready to assign to <c>RagOptions.Embedder</c>.
     /// Semantic and private (runs in-process), unlike the non-semantic core fallback.
-    /// <para>For multilingual corpora, point <c>EmbedderConfig.Model</c> at a model of
-    /// your choice instead: any export with <c>model.onnx</c> plus either a WordPiece
-    /// <c>vocab.txt</c> or a SentencePiece model (<c>sentencepiece.bpe.model</c>/
-    /// <c>spiece.model</c>/<c>tokenizer.model</c>), e.g. multilingual-e5-small.</para>
+    /// English-oriented — for other languages use <see cref="UseMultilingualDefaultModelAsync"/>
+    /// or point <c>EmbedderConfig.Model</c> at a model of your own choice.
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
-    public static async Task<EmbedderConfig> UseDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
+    public static Task<EmbedderConfig> UseDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
+        => DownloadModelAsync(DefaultModelName, DefaultModelFiles, cacheDir, ct);
+
+    /// <summary>
+    /// Same zero-config idea as <see cref="UseDefaultModelAsync"/>, but downloads
+    /// <c>multilingual-e5-small</c> (SentencePiece, ~100 languages incl. Spanish)
+    /// instead — meaningfully better retrieval on non-English corpora than the
+    /// English-oriented default.
+    /// </summary>
+    /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
+    public static Task<EmbedderConfig> UseMultilingualDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
+        => DownloadModelAsync(MultilingualModelName, MultilingualModelFiles, cacheDir, ct);
+
+    private static async Task<EmbedderConfig> DownloadModelAsync(
+        string modelName, (string Url, string File)[] files, string? cacheDir, CancellationToken ct)
     {
         Enable();
         cacheDir ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RagKit", "models", DefaultModelName);
+            "RagKit", "models", modelName);
         Directory.CreateDirectory(cacheDir);
 
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        foreach (var (url, file) in DefaultModelFiles)
+        foreach (var (url, file) in files)
         {
             var dest = Path.Combine(cacheDir, file);
             if (File.Exists(dest) && new FileInfo(dest).Length > 0) continue;
