@@ -316,8 +316,8 @@ progreso** (vía Server-Sent Events) y un **playground de preguntas**
 - ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
 - ✅ **`RagKit.Dashboard`** — panel de mantenimiento opt-in: montaje, auth hook,
   CRUD completo, ingesta con seguimiento de progreso (SSE) y playground de
-  preguntas (`AskAsync`/`AskStreamAsync`, SSE). Pendiente: empaquetado/CI
-  ampliada y una suite de tests más exhaustiva (Milestones 5-6).
+  preguntas (`AskAsync`/`AskStreamAsync`, SSE); empaquetado (assets embebidos
+  verificados) y suite de tests propia cerrados.
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
@@ -357,9 +357,12 @@ publicación automatizada por tag `v*`).
   agente, página de ingesta, y **`RagKit.Dashboard` montado en `/rag-admin`**.
   `dotnet run --project examples/RagCompleto` → `http://localhost:5119`.
 
-**Siguiente (opcional):** validación de integración real en CI de los 4 backends
-(docker-compose) incluyendo persistencia de perfiles/guardarails, y observabilidad
-(logging/métricas) de cara a 1.0.
+**Conocido, post-1.0:** la CI actual corre la suite offline (los tests de
+integración contra Qdrant/SQL Server/Postgres se auto-omiten si el servicio no
+está disponible, no hay `docker-compose` en el workflow) — validarlos de
+verdad en CI, más observabilidad (logging/métricas), quedan como siguiente
+paso; no bloquean 1.0 porque la superficie pública ya es estable (ver
+CHANGELOG: un solo breaking change documentado en toda la serie 0.x).
 
 ## Diseño
 Fachada simple por fuera; capas limpias por dentro. Los adaptadores que cambian
