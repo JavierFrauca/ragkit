@@ -1,0 +1,120 @@
+@page "/"
+@rendermode InteractiveServer
+@inject RagClient RagClient
+
+@*
+    RagSimple — el arranque mínimo de verdad: un dominio, una caja para
+    ingerir texto, una caja para preguntar. Sin perfiles, sin guardarails
+    a la vista, sin subida de fichero — mira examples/RagCompleto para el
+    tour con todo lo demás (multi-dominio, perfiles, modo agente, panel
+    de administración…).
+
+    RagClient se inyecta directamente (registrado como singleton ya
+    inicializado en Program.cs) — no hace falta ninguna clase intermedia.
+*@
+
+<PageTitle>RagSimple</PageTitle>
+
+<header class="topbar">
+    <div class="brand">
+        <span class="logo">◆</span>
+        <div>
+            <h1>RagSimple</h1>
+            <p>El RAG en 4 líneas, con Ollama · configurable en appsettings.json</p>
+        </div>
+    </div>
+    <span class="chips">@_docCount documento(s) indexado(s)</span>
+</header>
+
+<div class="grid">
+
+    <section class="card">
+        <h2><span class="num">1</span> Ingestar</h2>
+        <label>Texto</label>
+        <textarea @bind="_text" rows="8" placeholder="Pega aquí el contenido de un documento…"></textarea>
+        <label>Nombre / fuente</label>
+        <input @bind="_source" placeholder="p. ej. manual.txt" />
+        <button class="primary" disabled="@_ingesting" @onclick="Ingest">
+            @(_ingesting ? "Ingestando…" : "Ingerir texto")
+        </button>
+        @if (_ingMsg is not null) { <div class="@(_ingOk ? "ok-msg" : "err")">@_ingMsg</div> }
+    </section>
+
+    <section class="card chat">
+        <h2><span class="num">2</span> Preguntar</h2>
+        <div class="ask">
+            <input @bind="_question" @bind:event="oninput" @onkeydown="OnKey"
+                   placeholder="Escribe tu pregunta…" disabled="@_asking" />
+            <button class="primary" disabled="@_asking" @onclick="Ask">
+                @(_asking ? "…" : "Preguntar")
+            </button>
+        </div>
+
+        @if (_answer is not null)
+        {
+            <div class="bubble">@_answer</div>
+            @if (_citations.Count > 0)
+            {
+                <div class="cites">
+                    @foreach (var c in _citations.GroupBy(x => x.Source).Select(g => g.First()))
+                    {
+                        <span class="cite" title="@c.Snippet">[@c.Source]</span>
+                    }
+                </div>
+            }
+        }
+        @if (_askError is not null) { <div class="err">@_askError</div> }
+    </section>
+
+</div>
+
+@code {
+    string _text = "", _source = "";
+    bool _ingesting, _ingOk;
+    string? _ingMsg;
+    int _docCount;
+
+    string _question = "";
+    bool _asking;
+    string? _answer;
+    IReadOnlyList<Citation> _citations = Array.Empty<Citation>();
+    string? _askError;
+
+    protected override async Task OnInitializedAsync() => _docCount = (await RagClient.ListDocumentsAsync(Rag.Domain)).Count;
+
+    async Task Ingest()
+    {
+        _ingesting = true; _ingMsg = null;
+        var name = string.IsNullOrWhiteSpace(_source) ? "texto" : _source;
+        var result = await RagClient.IngestAsync(_text, name, domain: Rag.Domain);
+        _ingOk = !result.Rejected;
+        _ingMsg = _ingOk ? $"«{name}» indexado ({result.ChunkCount} fragmentos)." : "No se pudo ingerir (¿texto vacío?).";
+        if (_ingOk)
+        {
+            _text = ""; _source = "";
+            _docCount = (await RagClient.ListDocumentsAsync(Rag.Domain)).Count;
+        }
+        _ingesting = false;
+    }
+
+    async Task OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") await Ask(); }
+
+    async Task Ask()
+    {
+        var q = _question.Trim();
+        if (q.Length == 0 || _asking) return;
+        _asking = true; _answer = ""; _askError = null;
+        try
+        {
+            var stream = await RagClient.AskStreamAsync(q, domain: Rag.Domain);
+            _citations = stream.Citations; // ya disponibles antes de que llegue el primer token
+            await foreach (var token in stream.Tokens)
+            {
+                _answer += token;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex) { _askError = ex.Message; }
+        _asking = false;
+    }
+}

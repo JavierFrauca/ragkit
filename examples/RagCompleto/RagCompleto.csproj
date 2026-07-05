@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RagCompleto</RootNamespace>
+    <!-- Blazor Server: evita excepciones de navegación en redirecciones. -->
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core + extractor de PDF/DOCX (página de ingesta) + el panel de
+         administración (montado en /rag-admin, ver Program.cs). -->
+    <ProjectReference Include="..\..\src\RagKit\RagKit.csproj" />
+    <ProjectReference Include="..\..\src\RagKit.Extractors\RagKit.Extractors.csproj" />
+    <ProjectReference Include="..\..\src\RagKit.Dashboard\RagKit.Dashboard.csproj" />
+  </ItemGroup>
+
+</Project>

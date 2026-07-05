@@ -1,0 +1,77 @@
+@page "/ingesta"
+@rendermode InteractiveServer
+@inject RagClient RagClient
+
+@*
+    Ingesta con auto-clasificación real: si no fijas un dominio, el tier-2
+    decide entre fiscal/rrhh/legal (o rechaza el documento si no encaja en
+    ninguno con confianza suficiente — RagOptions.ClassificationThreshold).
+*@
+
+<PageTitle>RagCompleto — Ingesta</PageTitle>
+
+<section class="card">
+    <label>Dominio</label>
+    <select @bind="_domain">
+        <option value="">(auto-clasificar)</option>
+        <option value="@Domains.Fiscal">fiscal</option>
+        <option value="@Domains.Rrhh">rrhh</option>
+        <option value="@Domains.Legal">legal</option>
+    </select>
+
+    <label>Texto</label>
+    <textarea @bind="_text" rows="8" placeholder="Pega aquí el contenido de un documento…"></textarea>
+    <label>Nombre / fuente</label>
+    <input @bind="_source" placeholder="p. ej. contrato.txt" />
+    <button class="primary" disabled="@_busy" @onclick="IngestText">@(_busy ? "Ingestando…" : "Ingerir texto")</button>
+
+    <div class="or">— o sube un fichero (PDF / DOCX / TXT) —</div>
+    <InputFile OnChange="IngestFile" disabled="@_busy" />
+
+    @if (_lastResult is { } r)
+    {
+        <div class="@(r.Rejected ? "err" : "ok-msg")">
+            @if (r.Rejected)
+            {
+                <span>Rechazado: @r.Reason</span>
+            }
+            else
+            {
+                <span>«@r.Source» indexado en <b>@r.Domain</b> (@r.ChunkCount fragmentos, etiquetas: @string.Join(", ", r.Labels), confianza: @r.Confidence.ToString("P0"))</span>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    string _domain = "";
+    string _text = "", _source = "";
+    bool _busy;
+    IngestResult? _lastResult;
+
+    async Task IngestText()
+    {
+        _busy = true;
+        var name = string.IsNullOrWhiteSpace(_source) ? "texto" : _source;
+        var domainArg = string.IsNullOrEmpty(_domain) ? null : _domain;
+        _lastResult = await RagClient.IngestAsync(_text, name, domain: domainArg);
+        if (!_lastResult.Rejected) { _text = ""; _source = ""; }
+        _busy = false;
+    }
+
+    async Task IngestFile(InputFileChangeEventArgs e)
+    {
+        _busy = true;
+        var file = e.File;
+        var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "_" + file.Name);
+        try
+        {
+            await using (var fs = File.Create(tmp))
+                await file.OpenReadStream(50_000_000).CopyToAsync(fs);
+            var domainArg = string.IsNullOrEmpty(_domain) ? null : _domain;
+            _lastResult = await RagClient.IngestFileAsync(tmp, domain: domainArg);
+        }
+        catch (Exception ex) { _lastResult = new IngestResult(file.Name, null, Array.Empty<string>(), 0, IngestOutcome.Rejected, ex.Message); }
+        finally { try { File.Delete(tmp); } catch { } _busy = false; }
+    }
+}

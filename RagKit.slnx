@@ -1,6 +1,8 @@
 <Solution>
   <Folder Name="/examples/">
     <Project Path="examples/MiniRag/MiniRag.csproj" />
+    <Project Path="examples/RagSimple/RagSimple.csproj" />
+    <Project Path="examples/RagCompleto/RagCompleto.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/RagKit.Dashboard/RagKit.Dashboard.csproj" />
