@@ -27,7 +27,14 @@ var rag = await RagClient.CreateAsync(new RagOptions
     // Un único dominio, sin clasificador: no hace falta enrutar ni clasificar
     // cuando todo el contenido cae en el mismo sitio.
     AutoClassify = false,
+    // Un booleano más y el propio tier-2 reordena los resultados por relevancia
+    // antes de responder (sin descargar ningún modelo de rerank aparte):
+    //   EnableLlmRerank = true,
 });
+// Alternativa al Embedder de arriba si la búsqueda en castellano no basta:
+// descarga y cachea un modelo ONNX multilingüe la primera vez (ver RagKit.Onnx),
+// en vez de pasar EmbedderConfig como arriba:
+//   Embedder = await RagKit.Onnx.OnnxEmbedding.UseMultilingualDefaultModelAsync(),
 await rag.DefineDomainAsync(Rag.Domain, "Documentos subidos por el usuario.");
 // (Sin este await previo a AddSingleton, Blazor no tendría un RagClient listo
 //  para inyectar en la primera petición — ver examples/RagCompleto para el
