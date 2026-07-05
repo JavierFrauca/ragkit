@@ -324,11 +324,16 @@ los candidatos antes del top-k; `RagKit.Onnx` incluye **`OnnxCrossEncoderReranke
 (multi-target `net8.0`/`net10.0`, README por paquete, Source Link y símbolos `.snupkg`;
 publicación automatizada por tag `v*`).
 
-**Ejemplo:** [`examples/MiniRag`](examples/MiniRag) — un RAG local en 4 líneas con
-Ollama (`qwen2.5:7b` + `nomic-embed-text`): ingiere documentos y chatea sobre ellos.
-```bash
-dotnet run --project examples/MiniRag   # http://localhost:5117
-```
+**Ejemplos** (Blazor Server, los tres con Ollama `qwen2.5:7b` + `nomic-embed-text`):
+- [`examples/MiniRag`](examples/MiniRag) — un dominio, subida de fichero, "lentes"
+  de perfil y prompt editable en caliente. `dotnet run --project examples/MiniRag` → `http://localhost:5117`.
+- [`examples/RagSimple`](examples/RagSimple) — el arranque mínimo de verdad: ingerir
+  texto + preguntar, sin nada más; LLM/embedder configurables por `appsettings.json`.
+  `dotnet run --project examples/RagSimple` → `http://localhost:5118`.
+- [`examples/RagCompleto`](examples/RagCompleto) — el tour completo: 3 dominios con
+  auto-clasificación, perfiles, guardarails + PII check, chat con memoria y modo
+  agente, página de ingesta, y **`RagKit.Dashboard` montado en `/rag-admin`**.
+  `dotnet run --project examples/RagCompleto` → `http://localhost:5119`.
 
 **Siguiente (opcional):** validación de integración real en CI de los 4 backends
 (docker-compose) incluyendo persistencia de perfiles/guardarails, y observabilidad

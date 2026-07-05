@@ -1,4 +1,4 @@
-using RagKit;
+﻿using RagKit;
 
 namespace MiniRag;
 
@@ -32,7 +32,6 @@ public sealed class Rag
     public const string Domain = "documentos";
 
     private RagClient? _client;
-    private RagOptions? _options;
 
     /// <summary>
     /// Prompt de sistema (en Markdown) que se le pasa al LLM. RagKit lo admite vía
@@ -123,8 +122,7 @@ public sealed class Rag
         if (_client is not null) return;
         try
         {
-            _options = BuildOptions();
-            _client = await RagClient.CreateAsync(_options);
+            _client = await RagClient.CreateAsync(BuildOptions());
             await _client.DefineDomainAsync(Domain, "Documentos subidos por el usuario.");
             Error = null;
         }
@@ -175,10 +173,11 @@ public sealed class Rag
     /// </summary>
     public Task<RagStream> AskStream(string question, string? profile)
     {
-        // El prompt es editable en caliente: lo aplicamos en cada pregunta. RagKit
-        // lo lee en cada llamada, así no hay que recrear el cliente. Cuando hay perfil,
-        // su prompt-lente tiene prioridad sobre este (cadena de resolución de prompt).
-        _options!.OneShotPrompt = string.IsNullOrWhiteSpace(SystemPrompt) ? null : SystemPrompt;
+        // El prompt es editable en caliente sobre el propio RagClient (RagClient.OneShotPrompt):
+        // RagKit lo relee en cada llamada, así no hay que recrear el cliente ni retener el
+        // RagOptions original aparte. Cuando hay perfil, su prompt-lente tiene prioridad sobre
+        // este (cadena de resolución de prompt).
+        _client!.OneShotPrompt = string.IsNullOrWhiteSpace(SystemPrompt) ? null : SystemPrompt;
         // Pasamos dominio y perfil explícitos: el enrutado ya se hizo en RouteAsync,
         // así evitamos una segunda llamada al tier-2.
         return _client!.AskStreamAsync(question, domain: Domain, profile: profile);

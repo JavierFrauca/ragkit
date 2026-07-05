@@ -1,0 +1,26 @@
+@inherits LayoutComponentBase
+
+<header class="topbar">
+    <div class="brand">
+        <span class="logo">◆</span>
+        <div>
+            <h1>RagCompleto</h1>
+            <p>3 dominios · perfiles · guardarails · modo agente · panel de administración</p>
+        </div>
+    </div>
+    <nav class="nav">
+        <NavLink href="/" Match="NavLinkMatch.All">Chat</NavLink>
+        <NavLink href="/ingesta">Ingesta</NavLink>
+        <a href="/rag-admin/" target="_blank">Admin ↗</a>
+    </nav>
+</header>
+
+<main>
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Ha ocurrido un error.
+    <a href="." class="reload">Recargar</a>
+    <span class="dismiss">🗙</span>
+</div>

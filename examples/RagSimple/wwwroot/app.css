@@ -1,0 +1,84 @@
+:root {
+    --bg: #0f172a;
+    --bg2: #1e293b;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --brand: #6366f1;
+    --brand2: #8b5cf6;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    color: var(--ink);
+    background: linear-gradient(160deg, #f8fafc 0%, #eef2ff 100%);
+    min-height: 100vh;
+}
+
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+    padding: 18px 28px;
+    background: linear-gradient(100deg, var(--bg) 0%, var(--bg2) 100%);
+    color: #fff;
+}
+.brand { display: flex; align-items: center; gap: 14px; }
+.logo {
+    font-size: 28px;
+    background: linear-gradient(135deg, var(--brand), var(--brand2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.topbar h1 { margin: 0; font-size: 22px; }
+.topbar p { margin: 2px 0 0; font-size: 13px; color: #cbd5e1; }
+.chips { font-size: 12px; color: #94a3b8; }
+
+.grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 22px;
+    max-width: 1000px; margin: 24px auto; padding: 0 24px;
+}
+@media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+
+.card {
+    background: #fff; border-radius: 14px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, .08);
+}
+.card h2 { margin-top: 0; display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--brand); color: #fff; font-size: 12px;
+}
+label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+textarea, input {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    font: inherit;
+}
+button.primary {
+    margin-top: 12px; padding: 8px 16px; border: none; border-radius: 8px;
+    background: var(--brand); color: #fff; font-weight: 600; cursor: pointer;
+}
+button.primary:disabled { opacity: .6; cursor: not-allowed; }
+.ok-msg { margin-top: 8px; color: #16a34a; font-size: 13px; }
+.err { margin-top: 8px; color: #dc2626; font-size: 13px; }
+
+.ask { display: flex; gap: 8px; }
+.ask input { flex: 1; }
+.bubble {
+    margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+    background: #f1f5f9; white-space: pre-wrap;
+}
+.cites { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.cite {
+    font-size: 11px; background: #ede9fe; color: #6d28d9;
+    padding: 2px 8px; border-radius: 999px; cursor: default;
+}
+
+/* error UI de Blazor: oculta por defecto, el runtime la muestra si se cae la conexión */
+#blazor-error-ui {
+    display: none; position: fixed; bottom: 0; width: 100%;
+    background: #fee2e2; color: #991b1b; padding: 10px 16px; box-shadow: 0 -2px 10px rgba(0,0,0,.1);
+}
+#blazor-error-ui .dismiss { cursor: pointer; float: right; }
