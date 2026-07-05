@@ -34,6 +34,21 @@ public static class OnnxEmbedding
         ("https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/sentencepiece.bpe.model", "sentencepiece.bpe.model"),
     };
 
+    // Larger multilingual model (XLM-RoBERTa-large backbone, 1024-dim) — meaningfully
+    // stronger retrieval than multilingual-e5-small, at the cost of a bigger/slower
+    // model. This specific export (int8-quantized) bakes CLS-pooling + normalization
+    // into a second "logits" output alongside the raw "last_hidden_state" (verified via
+    // InferenceSession.OutputMetadata) — OnnxEmbedder detects and prefers it automatically,
+    // so PoolingStrategy.Cls below is really just documentation/a safety net for a future
+    // BGE-M3 export that only exposes raw hidden states. No query:/passage: prefix needed
+    // (unlike e5) — BGE-M3 doesn't require one for retrieval.
+    private const string BgeM3ModelName = "bge-m3";
+    private static readonly (string Url, string File)[] BgeM3ModelFiles =
+    {
+        ("https://huggingface.co/hotchpotch/vespa-onnx-BAAI-bge-m3-only-dense/resolve/main/BAAI-bge-m3_quantized.onnx", "model.onnx"),
+        ("https://huggingface.co/hotchpotch/vespa-onnx-BAAI-bge-m3-only-dense/resolve/main/sentencepiece.bpe.model", "sentencepiece.bpe.model"),
+    };
+
     /// <summary>
     /// The zero-config "real" embedder: downloads a small sentence-transformers ONNX
     /// model into a local cache the first time (then reused offline) and returns an
@@ -44,20 +59,35 @@ public static class OnnxEmbedding
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static Task<EmbedderConfig> UseDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
-        => DownloadModelAsync(DefaultModelName, DefaultModelFiles, cacheDir, ct);
+        => DownloadModelAsync(DefaultModelName, DefaultModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Mean, cacheDir, ct);
 
     /// <summary>
     /// Same zero-config idea as <see cref="UseDefaultModelAsync"/>, but downloads
     /// <c>multilingual-e5-small</c> (SentencePiece, ~100 languages incl. Spanish)
     /// instead — meaningfully better retrieval on non-English corpora than the
-    /// English-oriented default.
+    /// English-oriented default. Configures the mandatory <c>query:</c>/<c>passage:</c>
+    /// prefix this model family requires (see <see cref="OnnxEmbedder(string,bool)"/>)
+    /// automatically — callers don't need to know about it.
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static Task<EmbedderConfig> UseMultilingualDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
-        => DownloadModelAsync(MultilingualModelName, MultilingualModelFiles, cacheDir, ct);
+        => DownloadModelAsync(MultilingualModelName, MultilingualModelFiles, useQueryPassagePrefix: true, PoolingStrategy.Mean, cacheDir, ct);
+
+    /// <summary>
+    /// Same zero-config idea as <see cref="UseDefaultModelAsync"/>, but downloads
+    /// <b>BGE-M3</b> (int8-quantized, dense-only export) instead — a bigger, more
+    /// capable multilingual model than <c>multilingual-e5-small</c> (1024-dim vs
+    /// 384-dim), at the cost of a larger download and slower CPU inference. No
+    /// query:/passage: prefix needed (unlike e5). This only uses BGE-M3's dense
+    /// embedding — its sparse/ColBERT outputs aren't exposed through this preset.
+    /// </summary>
+    /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
+    public static Task<EmbedderConfig> UseBgeM3DefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
+        => DownloadModelAsync(BgeM3ModelName, BgeM3ModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Cls, cacheDir, ct);
 
     private static async Task<EmbedderConfig> DownloadModelAsync(
-        string modelName, (string Url, string File)[] files, string? cacheDir, CancellationToken ct)
+        string modelName, (string Url, string File)[] files, bool useQueryPassagePrefix, PoolingStrategy pooling,
+        string? cacheDir, CancellationToken ct)
     {
         Enable();
         cacheDir ??= Path.Combine(
@@ -72,7 +102,9 @@ public static class OnnxEmbedding
             if (File.Exists(dest) && new FileInfo(dest).Length > 0) continue;
             await DownloadAsync(http, url, dest, ct).ConfigureAwait(false);
         }
-        return new EmbedderConfig { Kind = EmbedderKind.Onnx, Model = cacheDir };
+        // Instance (not Kind/Model) so the prefix/pooling settings travel with the
+        // embedder without needing new EmbedderConfig fields for them.
+        return new EmbedderConfig { Instance = new OnnxEmbedder(cacheDir, useQueryPassagePrefix, pooling) };
     }
 
     private static async Task DownloadAsync(HttpClient http, string url, string dest, CancellationToken ct)
@@ -95,6 +127,21 @@ public static class OnnxEmbedding
     }
 }
 
+/// <summary>Which token(s) of the raw per-token output represent the sentence, when the
+/// ONNX graph doesn't already bake pooling into a dedicated output (see <see
+/// cref="OnnxEmbedder"/>'s output-resolution logic). <see cref="Mean"/> fits
+/// sentence-transformers-style models (MiniLM, e5); <see cref="Cls"/> fits BGE-style
+/// models, which use the first token's hidden state as the sentence representation.</summary>
+public enum PoolingStrategy
+{
+    /// <summary>Average the hidden state over every non-padding token. Default —
+    /// correct for all-MiniLM-L6-v2 and the e5 family.</summary>
+    Mean,
+    /// <summary>Take the hidden state of the first token ([CLS]/&lt;s&gt;) as-is.
+    /// Correct for BGE-family models (e.g. BGE-M3).</summary>
+    Cls,
+}
+
 /// <summary>
 /// Local, in-process embedder running a sentence-transformers ONNX model with mean
 /// pooling over the token embeddings and L2 normalization. The tokenizer is picked
@@ -109,12 +156,36 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     private readonly string _modelPath;
     private readonly string _tokenizerPath;
     private readonly bool _isSentencePiece;
+    private readonly bool _useQueryPassagePrefix;
+    private readonly PoolingStrategy _pooling;
     private InferenceSession? _session;
     private Tokenizer? _tokenizer;
     private bool _needsTokenTypes;
+    private string? _pooledOutputName;    // set if the graph already exposes a 2-D (batch, hidden) output
+    private string? _hiddenStateOutputName; // the raw 3-D (batch, seq, hidden) output, pooled here if no pooled one exists
 
-    public OnnxEmbedder(string modelDirOrPath)
+    /// <param name="modelDirOrPath">Model folder (or direct path to <c>model.onnx</c>).</param>
+    /// <param name="useQueryPassagePrefix">
+    /// The e5 family (e.g. multilingual-e5-small) is an asymmetric bi-encoder: it was
+    /// contrastively trained expecting every embedded text to be prefixed with
+    /// <c>"query: "</c> (a question) or <c>"passage: "</c> (indexed content) — without it,
+    /// query and passage vectors don't align the way the model learned. Set this to
+    /// <c>true</c> for e5-family models (done automatically by <see
+    /// cref="OnnxEmbedding.UseMultilingualDefaultModelAsync"/>); leave <c>false</c> (default)
+    /// for models with no such convention, e.g. all-MiniLM-L6-v2.
+    /// </param>
+    /// <param name="pooling">
+    /// How to collapse the raw per-token output into one sentence vector, for graphs
+    /// that don't already expose a pooled output themselves (see <see
+    /// cref="ResolveOutputNames"/>). Ignored when the graph does its own pooling —
+    /// e.g. the BGE-M3 export <see cref="OnnxEmbedding.UseBgeM3DefaultModelAsync"/>
+    /// downloads exposes a ready-pooled <c>logits</c> output alongside the raw
+    /// <c>last_hidden_state</c>, so this parameter never comes into play for it.
+    /// </param>
+    public OnnxEmbedder(string modelDirOrPath, bool useQueryPassagePrefix = false, PoolingStrategy pooling = PoolingStrategy.Mean)
     {
+        _useQueryPassagePrefix = useQueryPassagePrefix;
+        _pooling = pooling;
         _modelPath = File.Exists(modelDirOrPath) ? modelDirOrPath : Path.Combine(modelDirOrPath, "model.onnx");
         if (!File.Exists(_modelPath))
             throw new FileNotFoundException($"No se encontró el modelo ONNX en '{_modelPath}'.");
@@ -140,8 +211,36 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         _tokenizer = _isSentencePiece ? CreateSentencePiece(_tokenizerPath) : BertTokenizer.Create(_tokenizerPath);
         _session = new InferenceSession(_modelPath);
         _needsTokenTypes = _session.InputMetadata.ContainsKey("token_type_ids");
+        (_pooledOutputName, _hiddenStateOutputName) = ResolveOutputNames(_session.OutputMetadata);
         Dimension = EmbedCore("warmup").Length;
     }, ct);
+
+    /// <summary>
+    /// Some ONNX exports (e.g. the Vespa-oriented BGE-M3 build <see
+    /// cref="OnnxEmbedding.UseBgeM3DefaultModelAsync"/> downloads) bake pooling into
+    /// the graph and expose an already-pooled 2-D <c>(batch, hidden)</c> output — often
+    /// called <c>logits</c> — alongside the raw per-token 3-D <c>(batch, seq, hidden)</c>
+    /// one (typically <c>last_hidden_state</c>). Picking the 2-D one when present uses
+    /// whatever pooling/projection the model's own author intended, instead of guessing;
+    /// the 3-D one is kept as the fallback for graphs (MiniLM, e5) that only expose raw
+    /// hidden states and rely on us to pool (see <see cref="PoolingStrategy"/>).
+    /// </summary>
+    private static (string? Pooled, string? HiddenState) ResolveOutputNames(IReadOnlyDictionary<string, NodeMetadata> outputs)
+    {
+        string? pooled = null, hidden = null;
+        foreach (var (name, meta) in outputs)
+        {
+            switch (meta.Dimensions.Length)
+            {
+                case 2 when pooled is null: pooled = name; break;
+                case 3 when hidden is null: hidden = name; break;
+            }
+        }
+        if (pooled is null && hidden is null)
+            throw new NotSupportedException(
+                "El modelo ONNX no expone ni una salida 2-D (ya pooleada) ni una 3-D (per-token) reconocible.");
+        return (pooled, hidden);
+    }
 
     private static Tokenizer CreateSentencePiece(string path)
     {
@@ -149,15 +248,23 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         return SentencePieceTokenizer.Create(fs, addBeginningOfSentence: true, addEndOfSentence: true, specialTokens: null);
     }
 
-    public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) => Task.Run(() => EmbedCore(text), ct);
+    /// <summary>Embeds a query (a question). RagClient only ever calls this single-item
+    /// overload for the user's question — see <see cref="EmbedBatchAsync"/> for passages.</summary>
+    public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) =>
+        Task.Run(() => EmbedCore(_useQueryPassagePrefix ? "query: " + text : text), ct);
 
-    /// <summary>Batch: inference is thread-safe, so run chunks across cores.</summary>
+    /// <summary>Batch: inference is thread-safe, so run chunks across cores. RagClient only
+    /// ever calls this for chunks being indexed (passages) — see <see cref="EmbedAsync"/> for queries.</summary>
     public async Task<IReadOnlyList<float[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
     {
         var result = new float[texts.Count][];
         await Parallel.ForAsync(0, texts.Count,
             new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Environment.ProcessorCount },
-            (i, _) => { result[i] = EmbedCore(texts[i]); return ValueTask.CompletedTask; }).ConfigureAwait(false);
+            (i, _) =>
+            {
+                result[i] = EmbedCore(_useQueryPassagePrefix ? "passage: " + texts[i] : texts[i]);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
         return result;
     }
 
@@ -182,10 +289,41 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
 
         // InferenceSession.Run is thread-safe, so no lock: bulk ingest runs concurrently.
         using var results = _session.Run(inputs);
-        var output = results.First().AsTensor<float>(); // [1, seq, hidden]
+        var vec = _pooledOutputName is not null
+            ? ReadPooled(results, _pooledOutputName)
+            : Pool(results, _hiddenStateOutputName!, mask);
+
+        double norm = 0;
+        foreach (var x in vec) norm += (double)x * x;
+        norm = Math.Sqrt(norm);
+        if (norm > 0) for (int d = 0; d < vec.Length; d++) vec[d] = (float)(vec[d] / norm);
+        return vec;
+    }
+
+    /// <summary>The graph already pooled — copy its (batch, hidden) output as-is.</summary>
+    private static float[] ReadPooled(IReadOnlyCollection<DisposableNamedOnnxValue> results, string name)
+    {
+        var pooled = results.First(r => r.Name == name).AsTensor<float>(); // [1, hidden]
+        var vec = new float[pooled.Dimensions[1]];
+        for (int d = 0; d < vec.Length; d++) vec[d] = pooled[0, d];
+        return vec;
+    }
+
+    /// <summary>No pooled output available — collapse the raw per-token (batch, seq, hidden)
+    /// output ourselves, per <see cref="_pooling"/>.</summary>
+    private float[] Pool(IReadOnlyCollection<DisposableNamedOnnxValue> results, string name, long[] mask)
+    {
+        var output = results.First(r => r.Name == name).AsTensor<float>(); // [1, seq, hidden]
         int seq = output.Dimensions[1];
         int hidden = output.Dimensions[2];
         var vec = new float[hidden];
+
+        if (_pooling == PoolingStrategy.Cls)
+        {
+            for (int d = 0; d < hidden; d++) vec[d] = output[0, 0, d]; // position 0 = [CLS]/<s>, always valid
+            return vec;
+        }
+
         int valid = 0;
         for (int i = 0; i < seq; i++)
         {
@@ -194,11 +332,6 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
             for (int d = 0; d < hidden; d++) vec[d] += output[0, i, d];
         }
         if (valid > 0) for (int d = 0; d < hidden; d++) vec[d] /= valid;
-
-        double norm = 0;
-        foreach (var x in vec) norm += (double)x * x;
-        norm = Math.Sqrt(norm);
-        if (norm > 0) for (int d = 0; d < hidden; d++) vec[d] = (float)(vec[d] / norm);
         return vec;
     }
 
