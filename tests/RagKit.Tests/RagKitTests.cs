@@ -1090,6 +1090,7 @@ public class RagKitTests
         if (string.IsNullOrEmpty(dir) || !File.Exists(Path.Combine(dir, "model.onnx"))) return; // skip if model absent
 
         using var emb = new OnnxEmbedder(dir);
+        await emb.InitializeAsync();
         Assert.Equal(384, emb.Dimension);
         Assert.StartsWith("onnx:", emb.ModelId);
 
