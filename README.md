@@ -323,12 +323,17 @@ progreso** (vía Server-Sent Events) y un **playground de preguntas**
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos
 literales (códigos, "art. 14", años); el índice BM25 vive en RagKit y se reconstruye
 del store al iniciar. Un **reranker** opcional (`IReranker` + `SetReranker`) re-puntúa
-los candidatos antes del top-k; `RagKit.Onnx` incluye **`OnnxCrossEncoderReranker`**
-(cross-encoder local, p. ej. `ms-marco-MiniLM`, que puntúa cada par pregunta/pasaje).
-Nota: el reranker es WordPiece/inglés por ahora — en corpus no ingleses conviene
-priorizar un embedder multilingüe (`UseMultilingualDefaultModelAsync()`, arriba)
-antes que forzar este reranker, ya que un cross-encoder fuera de su idioma puede
-empeorar el orden en vez de mejorarlo.
+los candidatos antes del top-k. Dos opciones ya incluidas:
+- `RagKit.Onnx`'s **`OnnxCrossEncoderReranker`** (cross-encoder local, p. ej.
+  `ms-marco-MiniLM`, que puntúa cada par pregunta/pasaje) — WordPiece/inglés
+  por ahora; en corpus no ingleses conviene priorizar un embedder multilingüe
+  (`UseMultilingualDefaultModelAsync()`, arriba) antes que forzar este
+  reranker, ya que un cross-encoder fuera de su idioma puede empeorar el
+  orden en vez de mejorarlo.
+- **`RagOptions.EnableLlmRerank`** — sin modelo local: le pide al tier-2 (el
+  mismo que ya clasifica/enruta/guardarraila) que reordene los candidatos.
+  Multilingüe gratis y sin descarga, a cambio de una llamada tier-2 extra por
+  pregunta (una sola, no una por candidato). Opt-in, `false` por defecto.
 
 **Hecho además:** embeddings **ONNX locales** (`RagKit.Onnx`, con
 `UseDefaultModelAsync()` en inglés y `UseMultilingualDefaultModelAsync()` para

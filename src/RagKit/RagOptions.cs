@@ -1,4 +1,4 @@
-namespace RagKit;
+﻿namespace RagKit;
 
 /// <summary>An OpenAI-compatible LLM endpoint (OpenAI, DeepSeek, Groq, local…).</summary>
 public sealed class LlmConfig
@@ -143,4 +143,14 @@ public sealed class RagOptions
     /// mention an email/number. Turn it on to block queries that carry personal data.
     /// </summary>
     public bool GuardrailPiiCheck { get; set; } = false;
+
+    /// <summary>
+    /// When true, the tier-2 model reorders retrieved candidates by relevance before
+    /// the top-k truncation (one extra tier-2 call per query — off by default). Unlike
+    /// a local cross-encoder (see <c>RagKit.Onnx</c>'s <c>OnnxCrossEncoderReranker</c>),
+    /// this needs no model download and is multilingual for free (same model already
+    /// used for classification/routing/guardrails). A reranker installed explicitly via
+    /// <c>RagClient.SetReranker</c> always takes precedence over this.
+    /// </summary>
+    public bool EnableLlmRerank { get; set; } = false;
 }

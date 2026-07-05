@@ -1,4 +1,4 @@
-namespace RagKit.Internal;
+﻿namespace RagKit.Internal;
 
 /// <summary>
 /// Splits text into overlapping windows, cutting on a sentence/whitespace
@@ -82,6 +82,11 @@ internal static class Prompt
         "Eres un filtro de seguridad para la respuesta que un asistente va a entregar. Marca como NO permitida " +
         "(allowed=false) solo si la respuesta incumple alguna de las reglas indicadas (p. ej. revela datos " +
         "confidenciales). Ante la duda, permite (allowed=true).";
+
+    public const string RerankSystem =
+        "Eres un evaluador de relevancia. Recibes una pregunta y una lista de pasajes candidatos numerados " +
+        "por índice. Devuelve SOLO JSON: {\"order\":[<índices>]} con los índices ordenados de más a menos " +
+        "relevante para responder la pregunta. Incluye todos los índices recibidos, sin inventar ninguno nuevo.";
 
     public static string BuildUser(string question, IReadOnlyList<StoredHit> context)
     {

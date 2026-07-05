@@ -982,6 +982,76 @@ public class RagKitTests
     }
 
     [Fact]
+    public async Task LlmReranker_reorders_candidates_per_tier2_response()
+    {
+        var chat = new FakeChat("""{"order":[2,0,1]}""");
+        var reranker = new LlmReranker(chat);
+        var candidates = new List<StoredHit>
+        {
+            new("a.txt", "texto a", "docs", Array.Empty<string>(), 0.5),
+            new("b.txt", "texto b", "docs", Array.Empty<string>(), 0.4),
+            new("c.txt", "texto c", "docs", Array.Empty<string>(), 0.3),
+        };
+
+        var result = await reranker.RerankAsync("pregunta", candidates, topK: 3);
+
+        Assert.Equal(new[] { "c.txt", "a.txt", "b.txt" }, result.Select(h => h.Source));
+        Assert.Contains("[0] texto a", chat.Last![1].Content);
+        Assert.Contains("[1] texto b", chat.Last![1].Content);
+        Assert.Contains("[2] texto c", chat.Last![1].Content);
+    }
+
+    [Fact]
+    public void LlmReranker_ParseOrder_drops_bad_indices_and_appends_missing_ones()
+    {
+        // 5 is out of range for count=3, 1 is repeated, and 0 is never mentioned.
+        var order = LlmReranker.ParseOrder("""{"order":[5,1,1]}""", count: 3);
+        Assert.Equal(new[] { 1, 0, 2 }, order);
+    }
+
+    [Fact]
+    public void LlmReranker_ParseOrder_fails_open_on_unparseable_response()
+    {
+        var order = LlmReranker.ParseOrder("no soy json", count: 3);
+        Assert.Equal(new[] { 0, 1, 2 }, order);
+    }
+
+    [Fact]
+    public async Task EnableLlmRerank_wires_a_reranker_automatically_and_SetReranker_overrides_it()
+    {
+        var baseOpts = new RagOptions { Hybrid = false, TopK = 2, EnableInputGuardrail = false };
+
+        // Baseline (no rerank), to learn the fused order the deterministic hash-based
+        // LocalEmbedder produces for this exact corpus/query, without hardcoding it.
+        var baseline = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), baseOpts);
+        await baseline.DefineDomainAsync("docs");
+        await baseline.IngestAsync("contrato laboral uno", "a.txt", domain: "docs");
+        await baseline.IngestAsync("contrato laboral dos", "b.txt", domain: "docs");
+        var baselineAns = await baseline.AskAsync("contrato", domain: "docs");
+        var firstBefore = baselineAns.Citations[0].Source;
+        var secondBefore = baselineAns.Citations[1].Source;
+
+        var rerankChat = new FakeChat("""{"order":[1,0]}""");
+        var opts = new RagOptions { Hybrid = false, TopK = 2, EnableInputGuardrail = false, EnableLlmRerank = true };
+        var rag = await BuildAsync(new FakeChat("ok"), rerankChat, opts);
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contrato laboral uno", "a.txt", domain: "docs");
+        await rag.IngestAsync("contrato laboral dos", "b.txt", domain: "docs");
+
+        var ans = await rag.AskAsync("contrato", domain: "docs");
+        Assert.True(rerankChat.Calls >= 1);
+        Assert.Equal(secondBefore, ans.Citations[0].Source); // reversed vs. baseline
+        Assert.Equal(firstBefore, ans.Citations[1].Source);
+
+        // An explicit SetReranker call always overrides the auto-wired tier-2 reranker.
+        rerankChat.Calls = 0;
+        rag.SetReranker(new FrontReranker(firstBefore));
+        var ans2 = await rag.AskAsync("contrato", domain: "docs");
+        Assert.Equal(firstBefore, ans2.Citations[0].Source);
+        Assert.Equal(0, rerankChat.Calls);
+    }
+
+    [Fact]
     public void Extractors_read_pdf_and_docx()
     {
         DocumentExtractors.Enable();
