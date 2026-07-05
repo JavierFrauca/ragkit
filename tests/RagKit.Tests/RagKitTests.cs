@@ -1,4 +1,5 @@
 ﻿using System.Net.Http;
+using System.Runtime.CompilerServices;
 using RagKit;
 using RagKit.Internal;
 using RagKit.Extractors;
@@ -56,7 +57,9 @@ sealed class FakeAgentChat : IChatClient
 }
 
 /// <summary>A tool-capable fake that answers immediately (no tool calls) but records the
-/// tool specs and messages it was offered — for asserting on scoping/history.</summary>
+/// tool specs and messages it was offered — for asserting on scoping/history. Implements
+/// both <see cref="NextAsync"/> and <see cref="NextStreamAsync"/> so one spy covers both
+/// the non-streamed and streamed agent loops.</summary>
 sealed class SpyAgentChat : IChatClient
 {
     public IReadOnlyList<ToolSpec>? LastTools;
@@ -69,6 +72,49 @@ sealed class SpyAgentChat : IChatClient
         LastTools = tools;
         LastMessages = messages;
         return Task.FromResult(new AgentTurn("respuesta sin buscar", Array.Empty<ToolCall>()));
+    }
+
+    public async IAsyncEnumerable<AgentDelta> NextStreamAsync(
+        IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        LastTools = tools;
+        LastMessages = messages;
+        yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: "respuesta sin buscar");
+    }
+}
+
+/// <summary>A tool-capable fake with a streamed <see cref="NextStreamAsync"/>: turn 1
+/// emits a <see cref="AgentDeltaKind.ToolCallStarted"/> then <see
+/// cref="AgentDeltaKind.ToolCallsReady"/> for <c>search_knowledge_base</c>; turn 2 emits
+/// the final answer as several content pieces (proving real incremental streaming, not
+/// just one aggregated chunk).</summary>
+sealed class FakeAgentStreamChat : IChatClient
+{
+    private int _turn;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+        => Task.FromResult("plain");
+    public bool SupportsTools => true;
+
+    public async IAsyncEnumerable<AgentDelta> NextStreamAsync(
+        IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        _turn++;
+        if (_turn == 1)
+        {
+            yield return new AgentDelta(AgentDeltaKind.ToolCallStarted, ToolName: "search_knowledge_base");
+            yield return new AgentDelta(AgentDeltaKind.ToolCallsReady, ToolCalls: new[]
+            {
+                new ToolCall("call_1", "search_knowledge_base", "{\"query\":\"contrato\"}"),
+            });
+            yield break;
+        }
+        yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: "respuesta ");
+        yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: "final ");
+        yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: "streameada");
     }
 }
 
@@ -583,6 +629,130 @@ public class RagKitTests
         Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿qué es RagKit?");
         Assert.Contains(spy.LastMessages!, m => m.Role == "assistant" && m.Content == "Una librería de RAG.");
         Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿y qué más ofrece?");
+    }
+
+    // --- streamed agentic mode -------------------------------------------------
+
+    [Fact]
+    public async Task AskAgentStreamAsync_emits_tool_events_then_citations_then_tokens()
+    {
+        var rag = await BuildAsync(new FakeAgentStreamChat(), new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("el contrato laboral indefinido regula el empleo fijo", "laboral.txt", domain: "docs");
+
+        var stream = await rag.AskAgentStreamAsync("contrato", "docs");
+        var events = new List<AgentStreamEvent>();
+        await foreach (var e in stream.Events) events.Add(e);
+
+        Assert.Equal(AgentStreamEventKind.ToolCallStarted, events[0].Kind);
+        Assert.Equal("search_knowledge_base", events[0].ToolName);
+        Assert.Equal(AgentStreamEventKind.ToolCallFinished, events[1].Kind);
+        Assert.Equal("search_knowledge_base", events[1].ToolName);
+
+        Assert.Equal(AgentStreamEventKind.Citations, events[2].Kind);
+        Assert.NotEmpty(events[2].Citations!);           // the search tool surfaced the chunk
+        Assert.Equal("laboral.txt", events[2].Citations![0].Source);
+
+        var tokenEvents = events.Skip(3).ToList();
+        Assert.All(tokenEvents, e => Assert.Equal(AgentStreamEventKind.Token, e.Kind));
+        Assert.Equal("respuesta final streameada", string.Concat(tokenEvents.Select(e => e.Token)));
+    }
+
+    [Fact]
+    public async Task AskAgentStreamAsync_with_SearchOnly_never_offers_mutation_tools_to_the_model()
+    {
+        var spy = new SpyAgentChat();
+        var rag = await BuildAsync(spy, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        var stream = await rag.AskAgentStreamAsync("pregunta", "docs", tools: AgentToolScope.SearchOnly);
+        await foreach (var _ in stream.Events) { } // drain to completion
+
+        Assert.Equal(new[] { "search_knowledge_base" }, spy.LastTools!.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task AskAgentStreamAsync_output_guardrail_buffers_and_can_block()
+    {
+        var opts = new RagOptions();
+        opts.Guardrails.Add(new GuardrailRule("No reveles secretos", GuardrailStage.Output));
+        var tier2 = new RoutingChat(m =>
+            m[0].Content.Contains("para la respuesta") ? "{\"allowed\":false,\"reason\":\"secreto\"}" :
+            m[0].Content.Contains("filtro de seguridad") ? "{\"allowed\":true}" : "{}");
+        var rag = await BuildAsync(new FakeAgentStreamChat(), tier2, opts);
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido", "d.txt", domain: "docs");
+
+        var stream = await rag.AskAgentStreamAsync("contrato", "docs");
+        var events = new List<AgentStreamEvent>();
+        await foreach (var e in stream.Events) events.Add(e);
+
+        var tokenEvents = events.Where(e => e.Kind == AgentStreamEventKind.Token).ToList();
+        Assert.Single(tokenEvents); // buffered: one event, not troceado
+        Assert.Equal(opts.GuardrailRejectionMessage, tokenEvents[0].Token);
+        Assert.Single(events, e => e.Kind == AgentStreamEventKind.Citations); // still exactly one, before the token
+    }
+
+    [Fact]
+    public async Task AskAgentStreamAsync_falls_back_to_plain_streaming_without_tool_support()
+    {
+        var rag = await BuildAsync(new FakeChat("one-shot streamed answer"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("texto", "d.txt", domain: "docs");
+
+        var stream = await rag.AskAgentStreamAsync("q", "docs"); // FakeChat.SupportsTools == false
+        var events = new List<AgentStreamEvent>();
+        await foreach (var e in stream.Events) events.Add(e);
+
+        Assert.DoesNotContain(events, e => e.Kind is AgentStreamEventKind.ToolCallStarted or AgentStreamEventKind.ToolCallFinished);
+        Assert.Equal(AgentStreamEventKind.Citations, events[0].Kind);
+        var text = string.Concat(events.Where(e => e.Kind == AgentStreamEventKind.Token).Select(e => e.Token));
+        Assert.Equal("one-shot streamed answer", text);
+    }
+
+    [Fact]
+    public async Task OpenAi_streaming_tool_calls_assembles_fragmented_arguments()
+    {
+        // Tool calls arrive fragmented by index on the wire: id/name only in the first
+        // delta, arguments split arbitrarily across the following ones.
+        string Frame(object payload) => "data: " + System.Text.Json.JsonSerializer.Serialize(payload) + "\n\n";
+        var sse =
+            Frame(new
+            {
+                choices = new[] { new { delta = new { tool_calls = new object[] {
+                    new { index = 0, id = "call_abc", type = "function", function = new { name = "search_knowledge_base", arguments = "" } },
+                } } } },
+            }) +
+            Frame(new
+            {
+                choices = new[] { new { delta = new { tool_calls = new object[] {
+                    new { index = 0, function = new { arguments = "{\"query\":\"I" } },
+                } } } },
+            }) +
+            Frame(new
+            {
+                choices = new[] { new { delta = new { tool_calls = new object[] {
+                    new { index = 0, function = new { arguments = "VA\"}" } },
+                } } } },
+            }) +
+            "data: [DONE]\n\n";
+
+        using var http = new System.Net.Http.HttpClient(new SseHandler(sse)) { BaseAddress = new Uri("http://x/") };
+        var client = new OpenAiChatClient("http://x", "", "m", http);
+
+        var deltas = new List<AgentDelta>();
+        await foreach (var d in client.NextStreamAsync(
+            new[] { new AgentMessage("user", "buscar IVA") },
+            new[] { new ToolSpec("search_knowledge_base", "busca", "{}") }))
+            deltas.Add(d);
+
+        Assert.Equal(AgentDeltaKind.ToolCallStarted, deltas[0].Kind);
+        Assert.Equal("search_knowledge_base", deltas[0].ToolName);
+        var ready = Assert.Single(deltas, d => d.Kind == AgentDeltaKind.ToolCallsReady);
+        var call = Assert.Single(ready.ToolCalls!);
+        Assert.Equal("call_abc", call.Id);
+        Assert.Equal("search_knowledge_base", call.Name);
+        Assert.Equal("{\"query\":\"IVA\"}", call.ArgumentsJson);
     }
 
     [Fact]

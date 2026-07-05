@@ -25,6 +25,15 @@ internal static class AskEndpoints
             var stream = await rag.AskStreamAsync(question, domain, null, profile, ct).ConfigureAwait(false);
             return TypedResults.ServerSentEvents(StreamAskEventsAsync(stream, ct), eventType: "ask");
         });
+
+        // SearchOnly always here: the dashboard playground has no authentication of
+        // its own (see its README) — mutation tools are never offered to the model
+        // unless the host has chained its own auth scheme onto MapRagDashboard.
+        group.MapGet("/api/ask/agent/stream", async (string question, string? domain, RagClient rag, CancellationToken ct) =>
+        {
+            var stream = await rag.AskAgentStreamAsync(question, domain, tools: AgentToolScope.SearchOnly, ct: ct).ConfigureAwait(false);
+            return TypedResults.ServerSentEvents(StreamAgentEventsAsync(stream, ct), eventType: "agent");
+        });
     }
 
     // Citations first (RagStream.Citations is already resolved before any token
@@ -37,6 +46,17 @@ internal static class AskEndpoints
 
         await foreach (var token in stream.Tokens.WithCancellation(ct))
             yield return JsonSerializer.Serialize(new { token }, DashboardJson.Options);
+
+        yield return JsonSerializer.Serialize(new { done = true }, DashboardJson.Options);
+    }
+
+    // Each AgentStreamEvent already carries a discriminant (Kind) — serialized as a
+    // string via DashboardJson.Options' JsonStringEnumConverter — so the frontend can
+    // switch on it directly instead of needing separate event shapes per kind.
+    private static async IAsyncEnumerable<string> StreamAgentEventsAsync(AgentStream stream, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var e in stream.Events.WithCancellation(ct))
+            yield return JsonSerializer.Serialize(e, DashboardJson.Options);
 
         yield return JsonSerializer.Serialize(new { done = true }, DashboardJson.Options);
     }

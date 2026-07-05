@@ -4,6 +4,30 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.9.0] - 2026-07-05
+
+### Añadido
+- **Modo agéntico streameable** (`AskAgentStreamAsync`, dos sobrecargas espejo
+  de `AskAgentAsync`) — no solo la respuesta final token a token: emite
+  también eventos de actividad intermedia (`ToolCallStarted`/
+  `ToolCallFinished`) mientras el modelo decide usar herramientas, con las
+  citas como su propio evento justo antes del primer token (`AgentStream`/
+  `AgentStreamEvent`, nuevos). Mismo enrutado, guardarails (incluida la
+  degradación *buffer-then-emit* cuando hay regla de salida) y `AgentToolScope`
+  que la versión no streameada; cae a `AskStreamAsync` (adaptado al mismo
+  formato de eventos) si el modelo no soporta tool-calling.
+  Requiere un nuevo `IChatClient.NextStreamAsync` (con DIM por defecto — no
+  rompe implementaciones de terceros) que el cliente OpenAI-compatible
+  implementa parseando el streaming de tool-calling (`tool_calls` llegan
+  fragmentadas por índice: `id`/`function.name` solo en el primer trozo,
+  `function.arguments` partido en pedazos arbitrarios).
+- **`RagKit.Dashboard`**: nuevo endpoint `GET api/ask/agent/stream`
+  (`AgentToolScope.SearchOnly` siempre, coherente con no tener autenticación
+  propia), sin tocar `api/ask/stream` existente.
+- **`examples/RagCompleto`**: el modo "Agente" del chat usa ahora streaming
+  real, mostrando la actividad de la herramienta (🔍 usando… / ✓ lista) y la
+  respuesta token a token — verificado manualmente en navegador.
+
 ## [0.8.1] - 2026-07-05
 
 ### Cambiado

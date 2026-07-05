@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -173,6 +173,141 @@ internal sealed class OpenAiChatClient : IChatClient
             }
         }
         return new AgentTurn(text, toolCalls);
+    }
+
+    /// <summary>Streamed counterpart of <see cref="NextAsync"/>: same request shape
+    /// (tools, tool_choice: auto) but <c>stream: true</c>. Unlike plain content
+    /// streaming, tool calls arrive fragmented by index — a call's <c>id</c>/
+    /// <c>function.name</c> only in the first delta for that index, <c>function.
+    /// arguments</c> split across arbitrarily many subsequent deltas — so this
+    /// accumulates by index and only yields <see cref="AgentDeltaKind.ToolCallsReady"/>
+    /// once the stream ends. Not retried, like <see cref="StreamAsync"/>.</summary>
+    public async IAsyncEnumerable<AgentDelta> NextStreamAsync(
+        IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var msgArr = new JsonArray();
+        foreach (var m in messages)
+        {
+            var o = new JsonObject { ["role"] = m.Role };
+            o["content"] = m.Content;
+            if (m.ToolCallId is not null) o["tool_call_id"] = m.ToolCallId;
+            if (m.ToolCalls is { Count: > 0 })
+            {
+                var calls = new JsonArray();
+                foreach (var c in m.ToolCalls)
+                    calls.Add(new JsonObject
+                    {
+                        ["id"] = c.Id,
+                        ["type"] = "function",
+                        ["function"] = new JsonObject { ["name"] = c.Name, ["arguments"] = c.ArgumentsJson },
+                    });
+                o["tool_calls"] = calls;
+            }
+            msgArr.Add(o);
+        }
+
+        var toolArr = new JsonArray();
+        foreach (var t in tools)
+            toolArr.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = t.Name,
+                    ["description"] = t.Description,
+                    ["parameters"] = JsonNode.Parse(t.ParametersSchema),
+                },
+            });
+
+        var root = new JsonObject
+        {
+            ["model"] = _model,
+            ["messages"] = msgArr,
+            ["tools"] = toolArr,
+            ["tool_choice"] = "auto",
+            ["stream"] = true,
+        };
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "chat/completions")
+        {
+            Content = new StringContent(root.ToJsonString(), Encoding.UTF8, "application/json"),
+        };
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            throw new RagKitException($"El LLM respondió {(int)resp.StatusCode}: {Truncate(err, 300)}");
+        }
+
+        var callIds = new Dictionary<int, string>();
+        var callNames = new Dictionary<int, string>();
+        var callArgs = new Dictionary<int, StringBuilder>();
+        var startedIndexes = new HashSet<int>();
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        using var reader = new StreamReader(stream);
+        while (await reader.ReadLineAsync(ct).ConfigureAwait(false) is { } line)
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+            var data = line["data:".Length..].Trim();
+            if (data.Length == 0) continue;
+            if (data == "[DONE]") break;
+
+            // Only primitive values are pulled out of the JsonDocument here — a
+            // JsonElement can't be yielded after `doc` (its `using`) is disposed.
+            string? contentPiece = null;
+            var newlyStarted = new List<string>();
+            try
+            {
+                using var doc = JsonDocument.Parse(data);
+                var choices = doc.RootElement.GetProperty("choices");
+                if (choices.GetArrayLength() == 0 || !choices[0].TryGetProperty("delta", out var delta))
+                    continue;
+
+                if (delta.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
+                    contentPiece = c.GetString();
+
+                if (delta.TryGetProperty("tool_calls", out var tcs) && tcs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var tc in tcs.EnumerateArray())
+                    {
+                        int index = tc.TryGetProperty("index", out var ix) ? ix.GetInt32() : 0;
+                        if (tc.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
+                            callIds[index] = idEl.GetString() ?? "";
+                        if (!tc.TryGetProperty("function", out var fn)) continue;
+                        if (fn.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String)
+                        {
+                            var name = nameEl.GetString() ?? "";
+                            callNames[index] = name;
+                            if (name.Length > 0 && startedIndexes.Add(index))
+                                newlyStarted.Add(name);
+                        }
+                        if (fn.TryGetProperty("arguments", out var argsEl) && argsEl.ValueKind == JsonValueKind.String)
+                        {
+                            if (!callArgs.TryGetValue(index, out var sb)) callArgs[index] = sb = new StringBuilder();
+                            sb.Append(argsEl.GetString());
+                        }
+                    }
+                }
+            }
+            catch (JsonException) { continue; }
+
+            if (!string.IsNullOrEmpty(contentPiece))
+                yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: contentPiece);
+            foreach (var name in newlyStarted)
+                yield return new AgentDelta(AgentDeltaKind.ToolCallStarted, ToolName: name);
+        }
+
+        if (callIds.Count > 0 || callNames.Count > 0 || callArgs.Count > 0)
+        {
+            var indexes = callIds.Keys.Union(callNames.Keys).Union(callArgs.Keys).OrderBy(i => i);
+            var final = indexes.Select(i => new ToolCall(
+                callIds.TryGetValue(i, out var id) ? id : "",
+                callNames.TryGetValue(i, out var name) ? name : "",
+                callArgs.TryGetValue(i, out var sb) ? sb.ToString() : "{}")).ToList();
+            yield return new AgentDelta(AgentDeltaKind.ToolCallsReady, ToolCalls: final);
+        }
     }
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";

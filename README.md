@@ -79,6 +79,15 @@ var s = await rag.AskStreamAsync("…", domain: "fiscal");
 await foreach (var token in s.Tokens) Console.Write(token);   // s.Citations ya disponible
 // chat.AskStreamAsync(...) hace lo mismo en una sesión con memoria.
 
+// 4b) Agéntico streameado: no solo la respuesta final token a token, también
+//     eventos de qué herramienta se está usando y cuándo termina.
+var ags = await rag.AskAgentStreamAsync("…", domain: "fiscal", tools: AgentToolScope.SearchOnly);
+await foreach (var e in ags.Events)
+{
+    if (e.Kind == AgentStreamEventKind.ToolCallStarted) Console.WriteLine($"🔍 usando {e.ToolName}…");
+    if (e.Kind == AgentStreamEventKind.Token) Console.Write(e.Token);
+}
+
 // 5) Multi-turno sin estado interno oculto: el historial es un parámetro explícito
 //    (función pura, sin objeto de sesión que sobreviva en memoria del proceso — lo
 //    reconstruyes tú desde tu propio almacén en cada turno).
@@ -303,6 +312,7 @@ progreso** (vía Server-Sent Events) y un **playground de preguntas**
 - ✅ Cliente chat compatible OpenAI (solo `HttpClient`); recuperación acotada por dominio/etiquetas; troceado por frontera.
 - ✅ **Gestión de documentos**: borrado por `source` (`RemoveDocumentAsync`), borrado de dominio completo (`RemoveDomainAsync`), inventario agregado (`ListDocumentsAsync`), listado paginado de chunks por documento con id (`ListChunksAsync`), ingesta idempotente por hash (`IngestIfChangedAsync`/`IngestFileIfChangedAsync`, con `IngestOutcome.Unchanged`), ingesta de carpeta completa (`IngestFolderAsync`) y catálogo genérico key-value (`Get/Save/DeleteCatalogEntryAsync`) — los 4 backends.
 - ✅ **Ask multi-turno con historial explícito** (`AskAsync`/`AskStreamAsync` con `priorHistory`): función pura sin estado interno compartido, alternativa a `ChatSession` para consumidores que persisten su propio historial y necesitan sobrevivir a reinicios del proceso.
+- ✅ **Modo agéntico streameable** (`AskAgentStreamAsync`): tokens de la respuesta final más eventos de actividad de herramienta (`ToolCallStarted`/`ToolCallFinished`), citas antes del primer token, mismos enrutado/guardarails/`AgentToolScope` que la versión no streameada.
 - ✅ **Prompts editables en caliente** sobre el `RagClient` ya creado (`OneShotPrompt`/`ChatPrompt`/`DomainPrompts`), sin recrear el cliente.
 - ✅ **`RagKit.Dashboard`** — panel de mantenimiento opt-in: montaje, auth hook,
   CRUD completo, ingesta con seguimiento de progreso (SSE) y playground de

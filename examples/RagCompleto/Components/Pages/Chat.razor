@@ -7,9 +7,11 @@
       • RAG    — RagClient.StartChat(domain, profile): sesión con memoria real
                  (el enrutado se resuelve una vez, en el primer turno, y se
                  reutiliza en los siguientes).
-      • Agente — RagClient.AskAgentAsync(...) con AgentToolScope.SearchOnly:
-                 el modelo decide si busca o no, una llamada por pregunta, sin
-                 memoria entre turnos (no hay variante de sesión agéntica hoy).
+      • Agente — RagClient.AskAgentStreamAsync(...) con AgentToolScope.SearchOnly:
+                 el modelo decide si busca o no; se ve la actividad de la
+                 herramienta (🔍 usando… / ✓ lista) y la respuesta llega en
+                 streaming igual que en modo RAG, aunque sin memoria entre
+                 turnos (no hay variante de sesión agéntica hoy).
 
     El dominio se puede fijar o dejar en "auto" (el tier-2 enruta). La gestión
     de documentos/perfiles/guardarails vive en el panel de administración
@@ -50,6 +52,15 @@
     @foreach (var m in _msgs)
     {
         <div class="msg @m.Role">
+            @if (m.Activities.Count > 0)
+            {
+                <div class="activity">
+                    @foreach (var a in m.Activities)
+                    {
+                        <span class="tool">@(a.Done ? "✓" : "🔍") @a.Name@(a.Done ? " listo" : "…")</span>
+                    }
+                </div>
+            }
             <div class="bubble">@(m.Text.Length == 0 ? "…" : m.Text)</div>
             @if (m.Citations.Count > 0)
             {
@@ -86,6 +97,15 @@
         public required string Role { get; init; }
         public string Text { get; set; } = "";
         public IReadOnlyList<Citation> Citations { get; set; } = Array.Empty<Citation>();
+        public List<ToolActivity> Activities { get; } = new();
+    }
+
+    /// <summary>One tool call shown in the "Agente" mode transcript: pending
+    /// (🔍 usando…) until its matching <c>ToolCallFinished</c> event arrives (✓ lista).</summary>
+    sealed class ToolActivity
+    {
+        public required string Name { get; init; }
+        public bool Done { get; set; }
     }
 
     void ResetConversation()
@@ -113,10 +133,30 @@
             var domainArg = string.IsNullOrEmpty(_domain) ? null : _domain;
             if (_mode == "Agente")
             {
-                // Sin streaming ni memoria: una llamada, el modelo decide si busca.
-                var result = await RagClient.AskAgentAsync(q, domain: domainArg, tools: AgentToolScope.SearchOnly);
-                answer.Text = result.Answer;
-                answer.Citations = result.Citations;
+                // Streameado pero sin memoria entre turnos (no hay ChatSession agéntica
+                // hoy): el modelo decide si busca, se ve la actividad de la herramienta,
+                // y la respuesta final llega token a token igual que en modo RAG.
+                var stream = await RagClient.AskAgentStreamAsync(q, domain: domainArg, tools: AgentToolScope.SearchOnly);
+                await foreach (var e in stream.Events)
+                {
+                    switch (e.Kind)
+                    {
+                        case AgentStreamEventKind.ToolCallStarted:
+                            answer.Activities.Add(new ToolActivity { Name = e.ToolName! });
+                            break;
+                        case AgentStreamEventKind.ToolCallFinished:
+                            var pending = answer.Activities.LastOrDefault(a => a.Name == e.ToolName && !a.Done);
+                            if (pending is not null) pending.Done = true;
+                            break;
+                        case AgentStreamEventKind.Citations:
+                            answer.Citations = e.Citations!;
+                            break;
+                        case AgentStreamEventKind.Token:
+                            answer.Text += e.Token;
+                            break;
+                    }
+                    StateHasChanged();
+                }
             }
             else
             {

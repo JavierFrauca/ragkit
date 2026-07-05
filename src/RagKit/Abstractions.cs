@@ -58,6 +58,40 @@ public sealed record RagAnswer(string Answer, IReadOnlyList<Citation> Citations)
 /// </summary>
 public sealed record RagStream(IReadOnlyList<Citation> Citations, IAsyncEnumerable<string> Tokens);
 
+/// <summary>Which kind of event an <see cref="AgentStreamEvent"/> carries.</summary>
+public enum AgentStreamEventKind
+{
+    /// <summary>The agent started calling a tool (<see cref="AgentStreamEvent.ToolName"/> is set).</summary>
+    ToolCallStarted,
+    /// <summary>A tool call finished (<see cref="AgentStreamEvent.ToolName"/> and
+    /// <see cref="AgentStreamEvent.ToolResultSummary"/> are set).</summary>
+    ToolCallFinished,
+    /// <summary>The citations gathered so far (<see cref="AgentStreamEvent.Citations"/> is set) —
+    /// emitted once, right before the first <see cref="Token"/> of the final answer.</summary>
+    Citations,
+    /// <summary>One piece of the final answer (<see cref="AgentStreamEvent.Token"/> is set).</summary>
+    Token,
+}
+
+/// <summary>One event in an agentic stream — either tool-calling activity or a piece
+/// of the final answer. Only the fields relevant to <see cref="Kind"/> are set.</summary>
+public sealed record AgentStreamEvent(
+    AgentStreamEventKind Kind,
+    string? Token = null,
+    string? ToolName = null,
+    string? ToolResultSummary = null,
+    IReadOnlyList<Citation>? Citations = null);
+
+/// <summary>
+/// A streamed agentic answer: a single event stream mixing tool-calling activity
+/// with the final answer's tokens. Unlike <see cref="RagStream"/>, there's no eager
+/// <c>Citations</c> field — in agent mode, citations accumulate as the model
+/// decides to search (or not), so they arrive as their own <see
+/// cref="AgentStreamEventKind.Citations"/> event, right before the first token,
+/// rather than being known before the stream even starts.
+/// </summary>
+public sealed record AgentStream(IAsyncEnumerable<AgentStreamEvent> Events);
+
 /// <summary>The three things ingestion can end in: new content was written
 /// (<see cref="Ingested"/>), it was refused before writing anything
 /// (<see cref="Rejected"/> — no domain defined, low classification confidence, or an
@@ -137,6 +171,26 @@ public sealed record ToolCall(string Id, string Name, string ArgumentsJson);
 /// <summary>One step of the agent loop: either final text, or tool calls to run.</summary>
 public sealed record AgentTurn(string? Content, IReadOnlyList<ToolCall> ToolCalls);
 
+/// <summary>Which kind of delta <see cref="NextStreamAsync"/> yielded.</summary>
+public enum AgentDeltaKind
+{
+    /// <summary>A piece of the model's text answer (<see cref="AgentDelta.Content"/> is set).</summary>
+    ContentPiece,
+    /// <summary>A tool call's name just became known, before its arguments finish
+    /// streaming (<see cref="AgentDelta.ToolName"/> is set) — lets a caller show
+    /// "calling X…" before the full call is assembled.</summary>
+    ToolCallStarted,
+    /// <summary>The turn's tool calls, fully assembled (<see cref="AgentDelta.ToolCalls"/>
+    /// is set) — emitted once, at the end of a turn that requested tools.</summary>
+    ToolCallsReady,
+}
+
+/// <summary>One raw delta from a streamed agent turn (see <see cref="IChatClient.NextStreamAsync"/>).
+/// Only the field matching <see cref="Kind"/> is set.</summary>
+public sealed record AgentDelta(
+    AgentDeltaKind Kind, string? Content = null,
+    string? ToolName = null, IReadOnlyList<ToolCall>? ToolCalls = null);
+
 /// <summary>A message in the agent loop (adds tool role + tool-call metadata to <see cref="ChatMessage"/>).</summary>
 public sealed record AgentMessage(string Role, string? Content, string? ToolCallId = null, IReadOnlyList<ToolCall>? ToolCalls = null);
 
@@ -174,6 +228,24 @@ public interface IChatClient
             .ToList();
         var text = await CompleteAsync(simple, ct).ConfigureAwait(false);
         return new AgentTurn(text, Array.Empty<ToolCall>());
+    }
+
+    /// <summary>
+    /// Streamed counterpart of <see cref="NextAsync"/>: yields the turn's content
+    /// piece-by-piece, or its tool calls once fully assembled. Default implementation
+    /// makes one non-streamed <see cref="NextAsync"/> call and yields its result as a
+    /// single delta (so non-streaming clients still work); the OpenAI-compatible
+    /// client overrides this to read the server's SSE stream.
+    /// </summary>
+    async IAsyncEnumerable<AgentDelta> NextStreamAsync(
+        IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var turn = await NextAsync(messages, tools, ct).ConfigureAwait(false);
+        if (turn.ToolCalls.Count > 0)
+            yield return new AgentDelta(AgentDeltaKind.ToolCallsReady, ToolCalls: turn.ToolCalls);
+        else if (!string.IsNullOrEmpty(turn.Content))
+            yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: turn.Content);
     }
 }
 

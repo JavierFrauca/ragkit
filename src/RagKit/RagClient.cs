@@ -738,6 +738,178 @@ public sealed class RagClient
         return await GuardedAgentAnswer(final, route.Domain, primary, search, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Streamed counterpart of <see cref="AskAgentAsync(string,string?,int,AgentToolScope,CancellationToken)"/>:
+    /// same tool loop, scoping and guardrails, but yields an <see cref="AgentStream"/>
+    /// mixing tool-calling activity (<see cref="AgentStreamEventKind.ToolCallStarted"/>/
+    /// <see cref="AgentStreamEventKind.ToolCallFinished"/>) with the final answer's
+    /// tokens as they arrive. Falls back to <see
+    /// cref="AskStreamAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>
+    /// (adapted into the same event shape, with no tool-calling events) when the
+    /// model doesn't support tools.
+    /// </summary>
+    public Task<AgentStream> AskAgentStreamAsync(
+        string question, string? domain = null, int maxSteps = 5,
+        AgentToolScope tools = AgentToolScope.All, CancellationToken ct = default)
+        => AskAgentStreamCoreAsync(question, Array.Empty<ChatMessage>(), domain, null, maxSteps, tools, ct);
+
+    /// <summary>
+    /// Streamed agentic answer over explicit history, mirroring <see
+    /// cref="AskAgentAsync(string,IReadOnlyList{ChatMessage},string?,string?,int,AgentToolScope,CancellationToken)"/>.
+    /// Same tool loop, scoping and guardrails as
+    /// <see cref="AskAgentStreamAsync(string,string?,int,AgentToolScope,CancellationToken)"/>.
+    /// </summary>
+    public Task<AgentStream> AskAgentStreamAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory,
+        string? domain = null, string? profile = null, int maxSteps = 5,
+        AgentToolScope tools = AgentToolScope.All, CancellationToken ct = default)
+        => AskAgentStreamCoreAsync(question, priorHistory, domain, profile, maxSteps, tools, ct);
+
+    private async Task<AgentStream> AskAgentStreamCoreAsync(
+        string question, IReadOnlyList<ChatMessage> priorHistory, string? domain, string? profile,
+        int maxSteps, AgentToolScope toolScope, CancellationToken ct)
+    {
+        if (!_answer.SupportsTools)
+        {
+            var plain = priorHistory.Count > 0
+                ? await AskStreamAsync(question, priorHistory, domain, profile, ct).ConfigureAwait(false)
+                : await AskStreamAsync(question, domain, null, profile, ct).ConfigureAwait(false);
+            return new AgentStream(AdaptRagStreamAsync(plain, ct));
+        }
+
+        // Same front door as AskAgentAsync: route (when not pinned) and guardrail the
+        // query BEFORE any tool runs, so the agentic path can't bypass the guardrail.
+        var route = await ResolveRouteAsync(question, domain, profile, ct).ConfigureAwait(false);
+        var primary = route.Profiles.Count > 0 ? route.Profiles[0] : null;
+
+        var guard = await GuardInputAsync(question, route.Domain, primary, ct).ConfigureAwait(false);
+        if (!guard.Allowed)
+            return new AgentStream(RejectedAgentStreamAsync(_options.GuardrailRejectionMessage));
+
+        var search = new SearchTool(this, route.Domain);
+        var tools = BuildAgentTools(search, route.Domain, toolScope);
+        var specs = tools.Select(t => new ToolSpec(t.Name, t.Description, t.ParametersSchema)).ToList();
+        var byName = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+        var msgs = new List<AgentMessage>
+        {
+            new("system", SelectPrompt(route.Domain, primary, _options.OneShotPrompt ?? Prompt.AgentSystem)),
+        };
+        foreach (var h in priorHistory) msgs.Add(new AgentMessage(h.Role, h.Content));
+        msgs.Add(new AgentMessage("user", question));
+
+        return new AgentStream(RunAgentStreamAsync(msgs, specs, byName, maxSteps, route.Domain, primary, search, ct));
+    }
+
+    private static async IAsyncEnumerable<AgentStreamEvent> RejectedAgentStreamAsync(string message)
+    {
+        yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: Array.Empty<Citation>());
+        yield return new AgentStreamEvent(AgentStreamEventKind.Token, Token: message);
+    }
+
+    /// <summary>Adapts a plain (non-agentic) <see cref="RagStream"/> into the agentic
+    /// event shape, for callers/models that don't support tool-calling.</summary>
+    private static async IAsyncEnumerable<AgentStreamEvent> AdaptRagStreamAsync(
+        RagStream stream, [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: stream.Citations);
+        await foreach (var token in stream.Tokens.WithCancellation(ct))
+            yield return new AgentStreamEvent(AgentStreamEventKind.Token, Token: token);
+    }
+
+    /// <summary>The streamed agent loop itself: same shape as <see cref="AskAgentCoreAsync"/>'s
+    /// step loop, but each turn is read via <see cref="IChatClient.NextStreamAsync"/> so a
+    /// content-only (final) turn can be relayed live instead of waited-for-then-returned.
+    /// An applicable output guardrail buffers that final turn instead (can't validate
+    /// already-emitted tokens) — same "buffer-then-emit" degradation <see
+    /// cref="AskStreamAsync(string,string?,IReadOnlyList{string}?,string?,CancellationToken)"/>
+    /// already uses.</summary>
+    private async IAsyncEnumerable<AgentStreamEvent> RunAgentStreamAsync(
+        List<AgentMessage> msgs, List<ToolSpec> specs, Dictionary<string, IRagTool> byName, int maxSteps,
+        string? domain, string? profile, SearchTool search, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var bufferOutput = HasOutputGuardrail(domain, profile);
+
+        for (int step = 0; step < maxSteps; step++)
+        {
+            List<ToolCall>? toolCallsThisTurn = null;
+            var contentSoFar = new StringBuilder();
+            var citationsEmitted = false;
+
+            await foreach (var delta in _answer.NextStreamAsync(msgs, specs, ct).ConfigureAwait(false))
+            {
+                if (delta.Kind == AgentDeltaKind.ToolCallStarted)
+                {
+                    yield return new AgentStreamEvent(AgentStreamEventKind.ToolCallStarted, ToolName: delta.ToolName);
+                }
+                else if (delta.Kind == AgentDeltaKind.ContentPiece)
+                {
+                    if (!citationsEmitted)
+                    {
+                        citationsEmitted = true;
+                        if (!bufferOutput)
+                            yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: search.Citations.ToList());
+                    }
+                    contentSoFar.Append(delta.Content);
+                    if (!bufferOutput)
+                        yield return new AgentStreamEvent(AgentStreamEventKind.Token, Token: delta.Content);
+                }
+                else if (delta.Kind == AgentDeltaKind.ToolCallsReady)
+                {
+                    toolCallsThisTurn = delta.ToolCalls?.ToList();
+                }
+            }
+
+            if (toolCallsThisTurn is { Count: > 0 })
+            {
+                msgs.Add(new AgentMessage("assistant", null, ToolCalls: toolCallsThisTurn));
+                foreach (var call in toolCallsThisTurn)
+                {
+                    string result;
+                    try
+                    {
+                        result = byName.TryGetValue(call.Name, out var tool)
+                            ? await tool.InvokeAsync(call.ArgumentsJson, ct).ConfigureAwait(false)
+                            : $"error: herramienta '{call.Name}' desconocida";
+                    }
+                    catch (Exception ex) { result = "error: " + ex.Message; }
+                    msgs.Add(new AgentMessage("tool", result, ToolCallId: call.Id));
+                    yield return new AgentStreamEvent(AgentStreamEventKind.ToolCallFinished,
+                        ToolName: call.Name, ToolResultSummary: Snippet(result));
+                }
+                continue;
+            }
+
+            // Content-only (or truly empty) turn: this was the final answer.
+            if (bufferOutput)
+            {
+                var finalText = contentSoFar.ToString();
+                var og = await GuardOutputAsync(finalText, domain, profile, ct).ConfigureAwait(false);
+                yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: search.Citations.ToList());
+                yield return new AgentStreamEvent(AgentStreamEventKind.Token,
+                    Token: og.Allowed ? finalText : _options.GuardrailRejectionMessage);
+            }
+            else if (!citationsEmitted)
+            {
+                // Truly empty turn (no tool calls, zero content pieces) — still surface
+                // whatever citations were gathered, for parity with the non-streamed loop
+                // (GuardedAgentAnswer always returns a RagAnswer even when Content is empty).
+                yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: search.Citations.ToList());
+            }
+            yield break;
+        }
+
+        // Out of steps: force a final answer without tools (same fallback as the
+        // non-streamed loop), emitted as a single buffered Token.
+        var final = await _answer.CompleteAsync(
+            msgs.Where(m => m.Role is "system" or "user" or "assistant")
+                .Select(m => new ChatMessage(m.Role, m.Content ?? "")).ToList(), ct).ConfigureAwait(false);
+        var outGuard = await GuardOutputAsync(final, domain, profile, ct).ConfigureAwait(false);
+        yield return new AgentStreamEvent(AgentStreamEventKind.Citations, Citations: search.Citations.ToList());
+        yield return new AgentStreamEvent(AgentStreamEventKind.Token,
+            Token: outGuard.Allowed ? final : _options.GuardrailRejectionMessage);
+    }
+
     /// <summary>Build the tool list for one agent-loop call, scoped by <paramref name="scope"/>.
     /// <c>search</c> is always included — <see cref="AgentToolScope.SearchOnly"/> can't be
     /// turned off, it's the safe floor for untrusted callers.</summary>
