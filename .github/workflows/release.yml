@@ -1,7 +1,11 @@
 name: Release
 
-# Publica los paquetes en NuGet.org al empujar un tag de versión, p. ej. v0.1.0.
-# Requiere el secreto NUGET_API_KEY en el repositorio (Settings → Secrets → Actions).
+# Publica los paquetes en NuGet.org al empujar un tag de versión, p. ej. v1.0.0.
+# Usa Trusted Publishing (OIDC, sin claves de larga duración): requiere una
+# política configurada en nuget.org (usuario → Publicación de confianza) con
+# Propietario=JavierFrauca, Repositorio=ragkit, Archivo de flujo de trabajo=
+# release.yml, Entorno en blanco; y el secreto NUGET_USER (el nombre de
+# usuario/perfil de nuget.org, no el email) en el repositorio.
 on:
   push:
     tags: ['v*']
@@ -9,6 +13,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # necesario para solicitar el token OIDC de Trusted Publishing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -37,12 +43,18 @@ jobs:
       - name: Pack
         run: dotnet pack RagKit.slnx -c Release -o artifacts --no-build -p:ContinuousIntegrationBuild=true
 
+      - name: NuGet login (OIDC → clave de API temporal, válida 1h)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
       - name: Push to NuGet.org
         # Sube .nupkg y .snupkg (símbolos) en el mismo push. --skip-duplicate evita
         # fallar si una versión ya estaba publicada.
         run: >
           dotnet nuget push "artifacts/*.nupkg"
-          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
 
