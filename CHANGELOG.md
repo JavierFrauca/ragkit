@@ -4,6 +4,23 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [0.11.0] - 2026-07-05
+
+### Añadido
+- **`RagOptions.EnableLlmRerank`** — reranker de segunda etapa alternativo al
+  cross-encoder ONNX: en vez de un modelo local, le pide al tier-2 (el mismo
+  `IChatClient` que ya usa `Classifier`/`QueryRouter`/`Guardrail`) que
+  reordene los candidatos por relevancia. Multilingüe gratis (mismo modelo
+  que ya clasifica/enruta/guardarraila) y sin descarga de modelo, a cambio de
+  una llamada tier-2 extra por pregunta (una sola, no una por candidato como
+  el cross-encoder). Opt-in (`false` por defecto). Implementación interna
+  (`LlmReranker`) con parseo defensivo de la respuesta: índices fuera de
+  rango o duplicados se descartan, los candidatos que el modelo no menciona
+  se añaden al final en su orden original, y ante una respuesta no parseable
+  se cae al orden original (fail-open) — el modelo comportándose mal no
+  puede empeorar la recuperación respecto a no tener reranker. Un
+  `SetReranker(...)` explícito siempre tiene prioridad sobre este.
+
 ## [0.10.0] - 2026-07-05
 
 ### Añadido

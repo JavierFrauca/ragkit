@@ -42,6 +42,9 @@ public sealed class RagClient
         _classifier = new Classifier(classifier);
         _router = new QueryRouter(classifier);
         _guardrail = new Guardrail(classifier);
+        // Opt-in default reranker (tier-2 reorders candidates instead of a local
+        // cross-encoder). SetReranker, called after CreateAsync, always overrides this.
+        if (options.EnableLlmRerank) _reranker = new LlmReranker(classifier);
         // Seed the in-memory config from options. CreateAsync later reconciles this
         // with what's persisted in the store (store wins if it already has entries).
         _profiles = options.Profiles.ToList();
