@@ -4,7 +4,7 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-05
 
 ### Corregido
 - **`OnnxEmbedding.UseMultilingualDefaultModelAsync()` (multilingual-e5-small) no
