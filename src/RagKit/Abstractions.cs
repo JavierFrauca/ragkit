@@ -135,6 +135,15 @@ public interface IEmbedder
     /// <summary>Output vector dimension. Valid after <see cref="InitializeAsync"/>.</summary>
     int Dimension { get; }
 
+    /// <summary>
+    /// Realistic character budget for a chunk embedded with this model (its effective
+    /// token window minus a safety margin, at ~4 chars/token) — used to size the
+    /// structural chunker instead of a single value hardcoded for every backend.
+    /// <see cref="RagOptions.ChunkMaxChars"/> overrides this when set. Default 1000
+    /// (the old fixed-window <c>Chunker</c> default) — conservative, fits any small model.
+    /// </summary>
+    int MaxChunkChars => 1000;
+
     Task<float[]> EmbedAsync(string text, CancellationToken ct = default);
 
     /// <summary>

@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using RagKit;
 using RagKit.Internal;
 using RagKit.Extractors;
+using RagKit.Markdown;
 using RagKit.Mcp;
 using RagKit.Onnx;
 using RagKit.Postgres;
@@ -185,6 +186,19 @@ sealed class FrontReranker(string front) : IReranker
     public Task<IReadOnlyList<StoredHit>> RerankAsync(string query, IReadOnlyList<StoredHit> candidates, int topK, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<StoredHit>>(
             candidates.OrderByDescending(h => h.Source == front).Take(topK).ToList());
+}
+
+/// <summary>Wraps <see cref="LocalEmbedder"/> (deterministic hash vectors — good for
+/// asserting two texts embed to different vectors) with a configurable <see
+/// cref="MaxChunkChars"/>, so ingest tests can force a small/large chunk budget
+/// without needing a real semantic model on disk.</summary>
+sealed class FakeEmbedder(int maxChunkChars = 1000) : IEmbedder
+{
+    private readonly LocalEmbedder _inner = new();
+    public string ModelId => _inner.ModelId;
+    public int Dimension => _inner.Dimension;
+    public int MaxChunkChars { get; } = maxChunkChars;
+    public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) => _inner.EmbedAsync(text, ct);
 }
 
 public class RagKitTests
@@ -605,7 +619,7 @@ public class RagKitTests
         Assert.Equal(
             new[]
             {
-                "search_knowledge_base", "list_domains", "list_labels", "create_domain",
+                "search_knowledge_base", "list_domains", "list_labels", "get_document_summary", "create_domain",
                 "create_label", "ingest_document", "create_profile", "create_guardrail",
             },
             spy.LastTools!.Select(t => t.Name));
@@ -1871,5 +1885,248 @@ public class RagKitTests
         var secondConvoLength = answer.Last!.Count;
 
         Assert.True(secondConvoLength < firstConvoLength, "una historia vacía no debería arrastrar turnos de la llamada anterior");
+    }
+
+    // --- Fase 1: normalización a Markdown (RagKit.Markdown) --------------------------
+
+    [Fact]
+    public void MarkdownNormalizers_registers_html_csv_docx_and_pdf()
+    {
+        DocumentExtractors.Enable();
+        MarkdownNormalizers.Enable(); // called last: wins for .pdf/.docx too
+        Assert.True(FileExtractors.IsSupported("x.html"));
+        Assert.True(FileExtractors.IsSupported("x.csv"));
+        Assert.True(FileExtractors.IsSupported("x.pdf"));
+        Assert.True(FileExtractors.IsSupported("x.docx"));
+    }
+
+    [Fact]
+    public void CsvToMarkdown_converts_rows_into_a_single_markdown_table()
+    {
+        var csv = "nombre,ciudad\nAna,Madrid\nLuis,Bar|celona\n";
+        var md = CsvToMarkdown.ConvertCsv(new StringReader(csv));
+        Assert.Contains("| nombre | ciudad |", md);
+        Assert.Contains("| --- | --- |", md);
+        Assert.Contains("| Ana | Madrid |", md);
+        Assert.Contains("Bar\\|celona", md); // pipe escaped so the row stays valid Markdown
+    }
+
+    [Fact]
+    public void HtmlToMarkdown_converts_headings_and_tables()
+    {
+        var html = "<h1>Título</h1><p>Texto</p><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>";
+        var md = HtmlToMarkdown.ConvertHtml(html);
+        Assert.Contains("# Título", md);
+        Assert.Contains("|", md); // GithubFlavored renders the table with pipes
+    }
+
+    [Fact]
+    public void DocxToMarkdown_converts_heading_styles_and_tables()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var docxPath = Path.Combine(tmp, "d.docx");
+        using (var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Create(
+            docxPath, DocumentFormat.OpenXml.WordprocessingDocumentType.Document))
+        {
+            var main = doc.AddMainDocumentPart();
+            var heading = new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+                new DocumentFormat.OpenXml.Wordprocessing.ParagraphProperties(
+                    new DocumentFormat.OpenXml.Wordprocessing.ParagraphStyleId { Val = "Heading1" }),
+                new DocumentFormat.OpenXml.Wordprocessing.Run(
+                    new DocumentFormat.OpenXml.Wordprocessing.Text("Título docx")));
+            var table = new DocumentFormat.OpenXml.Wordprocessing.Table(
+                new DocumentFormat.OpenXml.Wordprocessing.TableRow(
+                    new DocumentFormat.OpenXml.Wordprocessing.TableCell(new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+                        new DocumentFormat.OpenXml.Wordprocessing.Run(new DocumentFormat.OpenXml.Wordprocessing.Text("a")))),
+                    new DocumentFormat.OpenXml.Wordprocessing.TableCell(new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+                        new DocumentFormat.OpenXml.Wordprocessing.Run(new DocumentFormat.OpenXml.Wordprocessing.Text("b"))))),
+                new DocumentFormat.OpenXml.Wordprocessing.TableRow(
+                    new DocumentFormat.OpenXml.Wordprocessing.TableCell(new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+                        new DocumentFormat.OpenXml.Wordprocessing.Run(new DocumentFormat.OpenXml.Wordprocessing.Text("1")))),
+                    new DocumentFormat.OpenXml.Wordprocessing.TableCell(new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+                        new DocumentFormat.OpenXml.Wordprocessing.Run(new DocumentFormat.OpenXml.Wordprocessing.Text("2"))))));
+            main.Document = new DocumentFormat.OpenXml.Wordprocessing.Document(
+                new DocumentFormat.OpenXml.Wordprocessing.Body(heading, table));
+            main.Document.Save();
+        }
+
+        var md = DocxToMarkdown.Convert(docxPath);
+        Assert.Contains("# Título docx", md);
+        Assert.Contains("| a | b |", md);
+        Assert.Contains("| 1 | 2 |", md);
+    }
+
+    [Fact]
+    public void PdfToMarkdown_extracts_readable_text_from_a_simple_pdf()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "d.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        pg.AddText("contrato laboral indefinido", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        // Tolerant assertion (80% target, not char-for-char): the heuristic layout
+        // analysis should at least recover the readable text of a trivial single-line PDF.
+        var md = PdfToMarkdown.Convert(pdfPath);
+        Assert.Contains("contrato", md);
+    }
+
+    // --- Fase 2: MarkdownChunker estructural + tamaño variable por embedder -----------
+
+    [Fact]
+    public void MarkdownChunker_groups_content_under_headings_with_breadcrumb()
+    {
+        var md = "# Uno\n\nTexto de la sección uno.\n\n## Dos\n\nTexto de la sección dos.\n";
+        var chunks = MarkdownChunker.Chunk(md, maxChars: 1000);
+        Assert.Contains(chunks, c => c.Breadcrumb == "Uno" && c.Text.Contains("sección uno"));
+        Assert.Contains(chunks, c => c.Breadcrumb == "Uno > Dos" && c.Text.Contains("sección dos"));
+    }
+
+    [Fact]
+    public void MarkdownChunker_keeps_a_table_atomic_even_when_larger_than_max_chars()
+    {
+        var rows = string.Join("\n", Enumerable.Range(1, 50).Select(i => $"| fila{i} | valor{i} |"));
+        var md = $"# Datos\n\n| a | b |\n|---|---|\n{rows}\n";
+
+        var chunks = MarkdownChunker.Chunk(md, maxChars: 50); // deliberately tiny
+        var tableChunk = Assert.Single(chunks, c => c.IsAtomicTable);
+        Assert.True(tableChunk.Text.Length > 50, "la tabla nunca debe partirse aunque exceda maxChars");
+        Assert.Contains("fila1", tableChunk.Text);
+        Assert.Contains("fila50", tableChunk.Text);
+    }
+
+    [Fact]
+    public void MarkdownChunker_falls_back_to_fixed_window_for_an_oversized_paragraph()
+    {
+        var longParagraph = string.Join(" ", Enumerable.Repeat("palabra", 300));
+        var md = $"# Título\n\n{longParagraph}\n";
+
+        var chunks = MarkdownChunker.Chunk(md, maxChars: 300);
+        Assert.True(chunks.Count > 1, "un párrafo mayor que maxChars debe subdividirse");
+        Assert.All(chunks, c => Assert.False(c.IsAtomicTable));
+    }
+
+    [Fact]
+    public void LocalEmbedder_default_max_chunk_chars_is_1000()
+    {
+        IEmbedder e = new LocalEmbedder();
+        Assert.Equal(1000, e.MaxChunkChars);
+    }
+
+    [Fact]
+    public void ApiEmbedder_max_chunk_chars_defaults_to_1000_and_is_overridable()
+    {
+        var cfg = new EmbedderConfig { Kind = EmbedderKind.OpenAi, Url = "http://localhost:1", Model = "fake", Dimension = 8 };
+        IEmbedder withoutOverride = new ApiEmbedder(cfg);
+        Assert.Equal(1000, withoutOverride.MaxChunkChars);
+
+        cfg.MaxChunkChars = 2500;
+        IEmbedder withOverride = new ApiEmbedder(cfg);
+        Assert.Equal(2500, withOverride.MaxChunkChars);
+    }
+
+    [Fact]
+    public async Task IngestAsync_chunk_count_follows_the_active_embedders_MaxChunkChars()
+    {
+        var text = string.Join(" ", Enumerable.Repeat("palabra", 200)); // one long paragraph, no headings
+
+        async Task<int> IngestWith(int maxChunkChars)
+        {
+            var embedder = new FakeEmbedder(maxChunkChars);
+            var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+            var store = new InMemoryVectorStore(dir);
+            await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+            var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), new FakeChat("{}"));
+            await rag.DefineDomainAsync("docs");
+            var result = await rag.IngestAsync(text, "d.txt", domain: "docs");
+            return result.ChunkCount;
+        }
+
+        int smallBudgetChunks = await IngestWith(maxChunkChars: 200);
+        int largeBudgetChunks = await IngestWith(maxChunkChars: 5000);
+
+        Assert.Equal(1, largeBudgetChunks);
+        Assert.True(smallBudgetChunks > largeBudgetChunks,
+            $"un presupuesto de chunk menor debe producir más chunks (small={smallBudgetChunks}, large={largeBudgetChunks})");
+    }
+
+    [Fact]
+    public async Task IngestAsync_keeps_an_oversized_table_atomic_and_only_adds_the_tier2_explanation_to_the_embedded_text()
+    {
+        var rows = string.Join("\n", Enumerable.Range(1, 60).Select(i => $"| fila{i} | valor{i} |"));
+        var markdown = $"# Datos\n\n| columna a | columna b |\n|---|---|\n{rows}\n";
+        const string explanation = "Explicación de la tabla: dos columnas, filas numeradas.";
+        var classifierChat = new FakeChat(explanation);
+
+        var embedder = new FakeEmbedder(maxChunkChars: 200); // well below the ~60-row table's length
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), classifierChat);
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(markdown, "tabla.txt", domain: "docs");
+        Assert.False(result.Rejected);
+        Assert.Equal(1, classifierChat.Calls); // exactly one tier-2 call: the table explanation
+
+        var page = await rag.ListChunksAsync("tabla.txt", "docs");
+        var tableChunk = Assert.Single(page.Items);
+        Assert.Contains("fila1", tableChunk.Text);
+        Assert.Contains("fila60", tableChunk.Text);
+        Assert.DoesNotContain(explanation, tableChunk.Text); // explanation never persisted/cited
+    }
+
+    // --- Fase 3: embedding contextual (flag) ------------------------------------------
+
+    [Fact]
+    public async Task IngestAsync_with_EnableContextualEmbedding_raises_similarity_for_queries_matching_only_the_documents_summary()
+    {
+        var text = "El artículo catorce regula el permiso retribuido anual.";
+        const string docSummary = "normativa vacaciones corporativas empleados senior";
+        const string query = "normativa vacaciones corporativas"; // vocabulary disjoint from `text`
+
+        async Task<double> IngestAndScore(bool enableContextual)
+        {
+            var embedder = new FakeEmbedder();
+            var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+            var store = new InMemoryVectorStore(dir);
+            await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+            var rag = new RagClient(new RagOptions { EnableContextualEmbedding = enableContextual, Hybrid = false },
+                embedder, store, new FakeChat("respuesta"), new FakeChat(docSummary));
+            await rag.DefineDomainAsync("docs");
+            await rag.IngestAsync(text, "d.txt", domain: "docs");
+
+            var ans = await rag.AskAsync(query, domain: "docs");
+            Assert.Single(ans.Citations);
+            Assert.DoesNotContain("corporativas", ans.Citations[0].Snippet); // raw chunk cited, never the summary
+            return ans.Citations[0].Score;
+        }
+
+        double scoreOn = await IngestAndScore(enableContextual: true);
+        double scoreOff = await IngestAndScore(enableContextual: false);
+
+        Assert.True(scoreOn > scoreOff,
+            $"con EnableContextualEmbedding activo la similitud debería subir (on={scoreOn}, off={scoreOff})");
+    }
+
+    [Fact]
+    public async Task GetDocumentSummaryAsync_returns_the_persisted_summary_only_when_the_flag_was_on()
+    {
+        const string docSummary = "Línea uno.\nLínea dos.\nLínea tres.";
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
+            embedder, store, new FakeChat("ok"), new FakeChat(docSummary));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("contenido del documento", "d.txt", domain: "docs");
+
+        Assert.Equal(docSummary, await rag.GetDocumentSummaryAsync("d.txt"));
+        Assert.Null(await rag.GetDocumentSummaryAsync("otro.txt"));
     }
 }

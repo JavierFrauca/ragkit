@@ -21,6 +21,7 @@ public sealed class RagClient
     private readonly Classifier _classifier;
     private readonly QueryRouter _router;
     private readonly Guardrail _guardrail;
+    private readonly Summarizer _summarizer;
     private readonly List<IRagTool> _externalTools = new();
     private readonly LexicalIndex _lexical = new();
     private readonly SemaphoreSlim _lexicalGate = new(1, 1);
@@ -42,6 +43,7 @@ public sealed class RagClient
         _classifier = new Classifier(classifier);
         _router = new QueryRouter(classifier);
         _guardrail = new Guardrail(classifier);
+        _summarizer = new Summarizer(classifier);
         // Opt-in default reranker (tier-2 reorders candidates instead of a local
         // cross-encoder). SetReranker, called after CreateAsync, always overrides this.
         if (options.EnableLlmRerank) _reranker = new LlmReranker(classifier);
@@ -131,6 +133,14 @@ public sealed class RagClient
     public Task<IReadOnlyList<DomainInfo>> ListDomainsAsync(CancellationToken ct = default) => _store.ListDomainsAsync(ct);
     public Task<IReadOnlyList<LabelInfo>> ListLabelsAsync(CancellationToken ct = default) => _store.ListLabelsAsync(ct);
     public Task<int> ChunkCountAsync(CancellationToken ct = default) => _store.CountAsync(ct);
+
+    private const string DocumentSummaryCatalogKind = "document-summary";
+
+    /// <summary>The 3-line tier-2 summary generated for <paramref name="source"/> during
+    /// ingestion (see <see cref="RagOptions.EnableContextualEmbedding"/>), or null if that
+    /// document has none (the flag was off, or it predates the flag being enabled).</summary>
+    public Task<string?> GetDocumentSummaryAsync(string source, CancellationToken ct = default)
+        => _store.GetCatalogEntryAsync(DocumentSummaryCatalogKind, source, ct);
 
     // --- profiles & guardrails CRUD (persisted) ------------------------------
 
@@ -280,25 +290,77 @@ public sealed class RagClient
         }
 
         var labelArr = finalLabels.ToArray();
-        var chunks = Chunker.Chunk(text);
-        if (chunks.Count == 0)
+
+        // Chunk size follows the active embedder's real token window (RagOptions.ChunkMaxChars
+        // overrides it). When contextual embedding is on, the section/paragraph budget shrinks
+        // to leave room for the doc-summary+breadcrumb prefix added below (never to what's
+        // persisted — only to what gets embedded).
+        int maxChars = _options.ChunkMaxChars ?? _embedder.MaxChunkChars;
+        int chunkBudget = _options.EnableContextualEmbedding
+            ? Math.Max(200, maxChars - ContextualPrefixReserveChars)
+            : maxChars;
+        var mdChunks = MarkdownChunker.Chunk(text, chunkBudget);
+        if (mdChunks.Count == 0)
             return new IngestResult(source, domain, labelArr, 0, Confidence: confidence);
+
+        string? docSummary = _options.EnableContextualEmbedding
+            ? Truncate(await _summarizer.SummarizeDocumentAsync(text, ct).ConfigureAwait(false), DocSummaryMaxChars)
+            : null;
+
+        // Tables are always atomic (never split, whatever their size) — when one still
+        // exceeds maxChars, the embedder would otherwise truncate it in silence. Prepending
+        // a short tier-2 explanation gives the vector a semantic signal in addition to
+        // whatever of the literal table content fits; EmbeddedChunk.Text below stays the
+        // full table regardless, so citations are never affected.
+        var textsToEmbed = new List<string>(mdChunks.Count);
+        foreach (var c in mdChunks)
+        {
+            string? tableExplanation = c.IsAtomicTable && c.Text.Length > maxChars
+                ? Truncate(await _summarizer.SummarizeTableAsync(c.Text, ct).ConfigureAwait(false), TableExplanationMaxChars)
+                : null;
+            textsToEmbed.Add(BuildEmbedText(docSummary, c.Breadcrumb, tableExplanation, c.Text));
+        }
 
         // Batch the embeddings (one round-trip / parallel inference) and the writes.
         // Every chunk in this call shares one timestamp — it's one ingestion event.
         var now = DateTime.UtcNow;
-        var vectors = await _embedder.EmbedBatchAsync(chunks, ct).ConfigureAwait(false);
-        var batch = new List<EmbeddedChunk>(chunks.Count);
-        for (int i = 0; i < chunks.Count; i++)
-            batch.Add(new EmbeddedChunk(source, chunks[i], domain, labelArr, vectors[i], now));
+        var vectors = await _embedder.EmbedBatchAsync(textsToEmbed, ct).ConfigureAwait(false);
+        var batch = new List<EmbeddedChunk>(mdChunks.Count);
+        for (int i = 0; i < mdChunks.Count; i++)
+            batch.Add(new EmbeddedChunk(source, mdChunks[i].Text, domain, labelArr, vectors[i], now));
         await _store.AddChunksAsync(batch, ct).ConfigureAwait(false);
+        if (docSummary is not null)
+            await _store.SaveCatalogEntryAsync(DocumentSummaryCatalogKind, source, docSummary, ct).ConfigureAwait(false);
 
         // Keep the lexical index in sync only once it's been loaded; otherwise the
         // first retrieval will enumerate these chunks from the store anyway.
         if (_options.Hybrid && Volatile.Read(ref _lexicalLoaded))
             foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels, c.IngestedAtUtc));
 
-        return new IngestResult(source, domain, labelArr, chunks.Count, Confidence: confidence);
+        return new IngestResult(source, domain, labelArr, mdChunks.Count, Confidence: confidence);
+    }
+
+    // Defensive caps on the contextual-embedding prefix: truncating in code (rather than
+    // trusting the tier-2 prompt to always respect "3 lines"/"2-4 lines") keeps the prefix
+    // from eating into ContextualPrefixReserveChars unpredictably.
+    private const int ContextualPrefixReserveChars = 600;
+    private const int DocSummaryMaxChars = 400;
+    private const int TableExplanationMaxChars = 400;
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
+
+    /// <summary>Assembles the text that gets EMBEDDED for one chunk — never what's
+    /// persisted in <see cref="EmbeddedChunk.Text"/> or shown as a citation.</summary>
+    private static string BuildEmbedText(string? docSummary, string breadcrumb, string? tableExplanation, string chunkText)
+    {
+        if (docSummary is null && tableExplanation is null && breadcrumb.Length == 0)
+            return chunkText;
+        var parts = new List<string>(4);
+        if (!string.IsNullOrEmpty(docSummary)) parts.Add(docSummary);
+        if (breadcrumb.Length > 0) parts.Add(breadcrumb);
+        if (!string.IsNullOrEmpty(tableExplanation)) parts.Add(tableExplanation);
+        parts.Add(chunkText);
+        return string.Join("\n", parts);
     }
 
     /// <summary>Ingest a file. Text is extracted via <see cref="FileExtractors"/>
@@ -923,6 +985,7 @@ public sealed class RagClient
         {
             tools.Add(new ListDomainsTool(this));
             tools.Add(new ListLabelsTool(this));
+            tools.Add(new GetDocumentSummaryTool(this));
         }
         if (scope.HasFlag(AgentToolScope.Mutation))
         {

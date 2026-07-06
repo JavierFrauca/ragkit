@@ -153,4 +153,20 @@ public sealed class RagOptions
     /// <c>RagClient.SetReranker</c> always takes precedence over this.
     /// </summary>
     public bool EnableLlmRerank { get; set; } = false;
+
+    /// <summary>
+    /// Override for the chunk character budget, taking precedence over <see
+    /// cref="IEmbedder.MaxChunkChars"/> when set. Null (default) defers to the
+    /// active embedder's own value.
+    /// </summary>
+    public int? ChunkMaxChars { get; set; }
+
+    /// <summary>
+    /// When true, ingest generates a 3-line tier-2 summary of the document and
+    /// prepends it (plus the chunk's heading breadcrumb) to the text that gets
+    /// EMBEDDED — never to what's persisted/cited. Off by default: costs one extra
+    /// tier-2 call per document and shrinks the effective per-chunk character budget
+    /// to leave room for the prefix.
+    /// </summary>
+    public bool EnableContextualEmbedding { get; set; } = false;
 }

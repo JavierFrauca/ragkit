@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 
 namespace RagKit.Agent;
@@ -76,6 +76,25 @@ internal sealed class ListLabelsTool(RagClient rag) : IRagTool
     {
         var ls = await rag.ListLabelsAsync(ct).ConfigureAwait(false);
         return ls.Count == 0 ? "(sin etiquetas)" : string.Join("\n", ls.Select(l => l.Name));
+    }
+}
+
+/// <summary>`get_document_summary` — the 3-line tier-2 summary generated for a source
+/// during ingestion (see <see cref="RagOptions.EnableContextualEmbedding"/>). Read-only;
+/// registered under <see cref="AgentToolScope.Classification"/> like the other list tools.</summary>
+internal sealed class GetDocumentSummaryTool(RagClient rag) : IRagTool
+{
+    public string Name => "get_document_summary";
+    public string Description => "Devuelve el resumen de 3 líneas generado para un documento durante su ingesta, si existe.";
+    public string ParametersSchema =>
+        """{"type":"object","properties":{"source":{"type":"string"}},"required":["source"]}""";
+    public async Task<string> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    {
+        var a = Args.Parse(argumentsJson);
+        var source = a.Str("source");
+        if (string.IsNullOrWhiteSpace(source)) return "error: falta 'source'";
+        var summary = await rag.GetDocumentSummaryAsync(source, ct).ConfigureAwait(false);
+        return summary ?? "(sin resumen para este documento)";
     }
 }
 

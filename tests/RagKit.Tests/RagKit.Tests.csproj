@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\RagKit.SqlServer\RagKit.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Onnx\RagKit.Onnx.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Extractors\RagKit.Extractors.csproj" />
+    <ProjectReference Include="..\..\src\RagKit.Markdown\RagKit.Markdown.csproj" />
   </ItemGroup>
 
 </Project>

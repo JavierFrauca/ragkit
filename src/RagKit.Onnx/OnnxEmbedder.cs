@@ -59,7 +59,7 @@ public static class OnnxEmbedding
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static Task<EmbedderConfig> UseDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
-        => DownloadModelAsync(DefaultModelName, DefaultModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Mean, cacheDir, ct);
+        => DownloadModelAsync(DefaultModelName, DefaultModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Mean, maxChunkChars: 900, cacheDir, ct);
 
     /// <summary>
     /// Same zero-config idea as <see cref="UseDefaultModelAsync"/>, but downloads
@@ -71,7 +71,7 @@ public static class OnnxEmbedding
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static Task<EmbedderConfig> UseMultilingualDefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
-        => DownloadModelAsync(MultilingualModelName, MultilingualModelFiles, useQueryPassagePrefix: true, PoolingStrategy.Mean, cacheDir, ct);
+        => DownloadModelAsync(MultilingualModelName, MultilingualModelFiles, useQueryPassagePrefix: true, PoolingStrategy.Mean, maxChunkChars: 1800, cacheDir, ct);
 
     /// <summary>
     /// Same zero-config idea as <see cref="UseDefaultModelAsync"/>, but downloads
@@ -83,11 +83,11 @@ public static class OnnxEmbedding
     /// </summary>
     /// <param name="cacheDir">Where to cache the model. Default: per-user local app data.</param>
     public static Task<EmbedderConfig> UseBgeM3DefaultModelAsync(string? cacheDir = null, CancellationToken ct = default)
-        => DownloadModelAsync(BgeM3ModelName, BgeM3ModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Cls, cacheDir, ct);
+        => DownloadModelAsync(BgeM3ModelName, BgeM3ModelFiles, useQueryPassagePrefix: false, PoolingStrategy.Cls, maxChunkChars: 24000, cacheDir, ct);
 
     private static async Task<EmbedderConfig> DownloadModelAsync(
         string modelName, (string Url, string File)[] files, bool useQueryPassagePrefix, PoolingStrategy pooling,
-        string? cacheDir, CancellationToken ct)
+        int maxChunkChars, string? cacheDir, CancellationToken ct)
     {
         Enable();
         cacheDir ??= Path.Combine(
@@ -104,7 +104,7 @@ public static class OnnxEmbedding
         }
         // Instance (not Kind/Model) so the prefix/pooling settings travel with the
         // embedder without needing new EmbedderConfig fields for them.
-        return new EmbedderConfig { Instance = new OnnxEmbedder(cacheDir, useQueryPassagePrefix, pooling) };
+        return new EmbedderConfig { Instance = new OnnxEmbedder(cacheDir, useQueryPassagePrefix, pooling, maxChunkChars) };
     }
 
     private static async Task DownloadAsync(HttpClient http, string url, string dest, CancellationToken ct)
@@ -182,10 +182,17 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     /// downloads exposes a ready-pooled <c>logits</c> output alongside the raw
     /// <c>last_hidden_state</c>, so this parameter never comes into play for it.
     /// </param>
-    public OnnxEmbedder(string modelDirOrPath, bool useQueryPassagePrefix = false, PoolingStrategy pooling = PoolingStrategy.Mean)
+    /// <param name="maxChunkChars">See <see cref="IEmbedder.MaxChunkChars"/> — the
+    /// character budget for a chunk embedded with this model's token window. The
+    /// three zero-config presets (<see cref="OnnxEmbedding"/>) pass in a value sized
+    /// to their actual window; a manually constructed <see cref="OnnxEmbedder"/> for
+    /// a different model should do the same.</param>
+    public OnnxEmbedder(string modelDirOrPath, bool useQueryPassagePrefix = false,
+        PoolingStrategy pooling = PoolingStrategy.Mean, int maxChunkChars = 1000)
     {
         _useQueryPassagePrefix = useQueryPassagePrefix;
         _pooling = pooling;
+        MaxChunkChars = maxChunkChars;
         _modelPath = File.Exists(modelDirOrPath) ? modelDirOrPath : Path.Combine(modelDirOrPath, "model.onnx");
         if (!File.Exists(_modelPath))
             throw new FileNotFoundException($"No se encontró el modelo ONNX en '{_modelPath}'.");
@@ -203,6 +210,7 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
 
     public string ModelId { get; }
     public int Dimension { get; private set; }
+    public int MaxChunkChars { get; }
 
     /// <summary>Load the model + tokenizer off the calling thread and probe the dimension.</summary>
     public Task InitializeAsync(CancellationToken ct = default) => Task.Run(() =>

@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -36,6 +36,9 @@ public sealed class EmbedderConfig
     public string? ApiKey { get; set; }
     /// <summary>For OpenAi: the vector dimension. If 0, it is probed once at startup.</summary>
     public int Dimension { get; set; }
+    /// <summary>For OpenAi: override for <see cref="IEmbedder.MaxChunkChars"/> — not
+    /// auto-detectable for a generic hosted endpoint. Null keeps the 1000 default.</summary>
+    public int? MaxChunkChars { get; set; }
 }
 
 /// <summary>
@@ -120,10 +123,12 @@ public sealed class ApiEmbedder : IEmbedder
         _model = cfg.Model;
         ModelId = "api:" + cfg.Model;
         Dimension = cfg.Dimension; // known up front, or probed in InitializeAsync
+        MaxChunkChars = cfg.MaxChunkChars ?? 1000;
     }
 
     public string ModelId { get; }
     public int Dimension { get; private set; }
+    public int MaxChunkChars { get; }
 
     /// <summary>Probe the vector dimension once (async, no constructor network call).</summary>
     public async Task InitializeAsync(CancellationToken ct = default)
