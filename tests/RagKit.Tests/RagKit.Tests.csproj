@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Fixtures\*.model" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\RagKit\RagKit.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Mcp\RagKit.Mcp.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Postgres\RagKit.Postgres.csproj" />
