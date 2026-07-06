@@ -42,6 +42,41 @@ Todas las novedades relevantes de RagKit. El formato sigue
   genérico ya existente (`SaveCatalogEntryAsync`, sin cambios de esquema) y se
   expone vía la nueva tool de agente `get_document_summary`.
 
+## [1.1.1] - 2026-07-06
+
+### Corregido
+- **`RagKit.Onnx`: los presets multilingües (`UseMultilingualDefaultModelAsync`,
+  `UseBgeM3DefaultModelAsync`) alimentaban el modelo con IDs de token
+  incorrectos.** `SentencePieceTokenizer.EncodeToIds` (`Microsoft.ML.Tokenizers`)
+  devuelve los IDs crudos del fichero `.model` (`<unk>=0, <s>=1, </s>=2` para
+  estos dos vocabularios), pero los modelos backbone XLM-RoBERTa que hay detrás
+  esperan el remapeo "fairseq" que aplica `transformers` de HuggingFace al
+  entrenar/exportar (`<s>=0, <pad>=1, </s>=2, <unk>=3`, cada token real en
+  `raw_id+1`) — `Microsoft.ML.Tokenizers` reproduce fielmente el sentencepiece
+  "de libro" y no hace este remapeo por ti. El impacto es mucho mayor en
+  `UseBgeM3DefaultModelAsync` (CLS-pooling: la posición 0, que debería ser
+  `<s>`, contenía el embedding de `<pad>`) que en
+  `UseMultilingualDefaultModelAsync` (mean-pooling, el error se diluye entre
+  todos los tokens) — verificado empíricamente: con el bug, BGE-M3 llegaba a
+  puntuar un pasaje irrelevante por encima del correcto en una pregunta real.
+  `OnnxEmbedder` ahora **detecta automáticamente** la huella de vocabulario
+  fairseq (`unk=0, bos=1, eos=2` en el `.model` crudo) y aplica el remapeo
+  solo cuando corresponde — sin ningún parámetro nuevo que pedir: cualquier
+  llamada existente a estos dos presets, o a `new OnnxEmbedder(...)` con un
+  modelo propio de esta misma familia, empieza a calcular embeddings
+  correctos en cuanto se actualiza el paquete, sin cambiar ni una línea de
+  código. `all-MiniLM-L6-v2` (WordPiece, `UseDefaultModelAsync`) no está
+  afectado — verificado.
+  **`OnnxEmbedder.ModelId` cambia** (sufijo `:fseq`) para todo vocabulario
+  donde se detecta y aplica el remapeo, de forma que `QdrantVectorStore` (o
+  cualquier `IVectorStore` con el mismo guard de modelo/dimensión) detecte el
+  cambio y falle explícitamente con `EmbeddingMismatchException` en el
+  primer arranque tras actualizar, en vez de mezclar en silencio vectores de
+  dos espacios distintos — **quien tenga documentos ya ingeridos con
+  `multilingual-e5-small` o `BGE-M3` debe reingerirlos tras esta
+  actualización**. Sin cambios en la API pública: mismos métodos, misma
+  firma en `OnnxEmbedder` y en los tres presets de `OnnxEmbedding`.
+
 ## [1.1.0] - 2026-07-05
 
 ### Corregido
