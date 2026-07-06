@@ -4,6 +4,44 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.2.0] - 2026-07-06
+
+### Añadido
+- **`RagKit.Markdown` (nuevo paquete)**: normaliza HTML, CSV, DOCX y PDF a Markdown
+  antes de ingestar (`MarkdownNormalizers.Enable()`), en vez de dejar que cada
+  formato llegue con su propia pérdida de fidelidad — hasta ahora PDF/DOCX se
+  extraían como texto plano sin estructura y HTML no tenía extractor registrado
+  (se ingería con las etiquetas incluidas). HTML vía `ReverseMarkdown`, CSV vía
+  `CsvHelper` (una tabla Markdown por fichero), DOCX recorriendo el árbol OOXML
+  directamente (estilos `Heading1`-`6` → encabezados, `w:tbl` → tabla), y PDF vía
+  `PdfPig` + `DocumentLayoutAnalysis` con heurísticas de tamaño de fuente (títulos)
+  y alineación de columnas (tablas) — un ~80% de calidad aceptado explícitamente,
+  sin runtime externo (ninguna alternativa .NET gratuita con buena detección de
+  tablas existe hoy; las de mayor fidelidad, p. ej. Docling, son Python).
+- **Chunking estructural + tamaño de chunk según el embedder activo**: nuevo
+  `Internal.MarkdownChunker` sustituye la ventana fija de 1000 caracteres en la
+  ruta de ingesta — parsea el Markdown (Markdig), agrupa contenido por encabezado
+  con un breadcrumb ("H1 > H2 > H3"), y solo subdivide una sección cuando excede
+  el tamaño objetivo (cayendo al `Chunker` de ventana fija existente como
+  fallback). Las tablas se emiten siempre como un chunk atómico independiente de
+  su tamaño — nunca se parten a mitad de fila. `IEmbedder.MaxChunkChars` (nuevo,
+  con valor por defecto 1000) sustituye ese tamaño fijo por uno acorde a la
+  ventana real del modelo en uso: 900 para `all-MiniLM-L6-v2` (~256 tokens), 1800
+  para `multilingual-e5-small` (512 tokens), 24000 para BGE-M3 (8192 tokens);
+  `RagOptions.ChunkMaxChars` permite forzar un valor explícito.
+- **`RagOptions.EnableContextualEmbedding`** (opt-in, `false` por defecto): genera
+  un resumen de 3 líneas del documento vía tier-2 (`Internal.Summarizer`, mismo
+  `IChatClient` que ya usan `Classifier`/`QueryRouter`/`Guardrail`) y lo antepone,
+  junto al breadcrumb de encabezados, **solo al texto que se embebe** — nunca al
+  que se persiste o se cita, así el consumidor final nunca ve el resumen
+  repetido en cada resultado. Cuando una tabla atómica excede `MaxChunkChars`
+  (y por tanto no puede partirse), se genera del mismo modo una explicación
+  breve de su contenido que se antepone solo al texto embebido, para no perder
+  del todo la señal semántica del embedder frente a una tabla que de otro modo
+  se truncaría en silencio. El resumen se persiste además en el catálogo
+  genérico ya existente (`SaveCatalogEntryAsync`, sin cambios de esquema) y se
+  expone vía la nueva tool de agente `get_document_summary`.
+
 ## [1.1.0] - 2026-07-05
 
 ### Corregido
