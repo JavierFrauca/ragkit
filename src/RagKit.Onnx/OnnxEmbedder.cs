@@ -163,6 +163,7 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     private bool _needsTokenTypes;
     private string? _pooledOutputName;    // set if the graph already exposes a 2-D (batch, hidden) output
     private string? _hiddenStateOutputName; // the raw 3-D (batch, seq, hidden) output, pooled here if no pooled one exists
+    private bool _needsFairseqRemap; // see InitializeAsync — true for XLM-RoBERTa-family SentencePiece vocabs
 
     /// <param name="modelDirOrPath">Model folder (or direct path to <c>model.onnx</c>).</param>
     /// <param name="useQueryPassagePrefix">
@@ -201,7 +202,7 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         ModelId = "onnx:" + new DirectoryInfo(dir).Name;
     }
 
-    public string ModelId { get; }
+    public string ModelId { get; private set; }
     public int Dimension { get; private set; }
 
     /// <summary>Load the model + tokenizer off the calling thread and probe the dimension.</summary>
@@ -209,6 +210,24 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     {
         if (_session is not null) return;
         _tokenizer = _isSentencePiece ? CreateSentencePiece(_tokenizerPath) : BertTokenizer.Create(_tokenizerPath);
+        if (_isSentencePiece && _tokenizer is SentencePieceTokenizer spTok)
+        {
+            // Fairseq/XLM-RoBERTa fingerprint: the raw .model has unk=0, bos=1, eos=2 —
+            // but the ONNX model's embedding table indexes <s>=0, <pad>=1, </s>=2, <unk>=3,
+            // with every real token at raw_id+1 (the remap `transformers` applies when
+            // training/exporting XLM-RoBERTa-family models — e.g. multilingual-e5-small,
+            // BGE-M3 — never reflected in the raw SentencePiece vocab itself). Detected
+            // here, not asked of the caller: this fixes every model with this fingerprint,
+            // whichever preset or hand-picked path fed it into OnnxEmbedder. Vanilla
+            // SentencePiece vocabs that don't train bos/eos as symbols (e.g. many T5/mT5
+            // models) report -1 for these and are correctly left untouched.
+            _needsFairseqRemap = HasFairseqFingerprint(spTok);
+            // Changing ModelId here (not in the constructor) means any app with an
+            // already-ingested vector store built under the old, wrong ids gets a loud
+            // EmbeddingMismatchException on next startup instead of silently mixing two
+            // incompatible vector spaces — reuses the guard vector stores already have.
+            if (_needsFairseqRemap) ModelId += ":fseq";
+        }
         _session = new InferenceSession(_modelPath);
         _needsTokenTypes = _session.InputMetadata.ContainsKey("token_type_ids");
         (_pooledOutputName, _hiddenStateOutputName) = ResolveOutputNames(_session.OutputMetadata);
@@ -248,6 +267,37 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         return SentencePieceTokenizer.Create(fs, addBeginningOfSentence: true, addEndOfSentence: true, specialTokens: null);
     }
 
+    /// <summary>
+    /// Whether <paramref name="tokenizer"/>'s raw vocabulary has the "fairseq"
+    /// XLM-RoBERTa fingerprint: unk=0, bos=1, eos=2 in the raw <c>.model</c> file,
+    /// which HuggingFace `transformers` remaps to &lt;s&gt;=0, &lt;pad&gt;=1, &lt;/s&gt;=2, &lt;unk&gt;=3
+    /// (+1 to every real token) when training/exporting these models — confirmed
+    /// against multilingual-e5-small's and BGE-M3's own <c>config.json</c> and with
+    /// Python's <c>sentencepiece</c>. Vanilla SentencePiece vocabs that never train
+    /// bos/eos as symbols (many T5/mT5 models) report -1 for those and correctly
+    /// don't match. Internal, not private, so it's unit-testable without needing a
+    /// full ONNX session.
+    /// </summary>
+    internal static bool HasFairseqFingerprint(SentencePieceTokenizer tokenizer) =>
+        tokenizer.UnknownId == 0 && tokenizer.BeginningOfSentenceId == 1 && tokenizer.EndOfSentenceId == 2;
+
+    /// <summary>
+    /// Applies the fairseq remap described in <see cref="HasFairseqFingerprint"/>.
+    /// <paramref name="rawIds"/> is exactly what <see cref="CreateSentencePiece"/>'s
+    /// wrapping produces: [raw bos, ...content..., raw eos], always at least 2
+    /// elements since both flags are always on. Internal, not private, so it's
+    /// unit-testable directly against hand-picked id sequences.
+    /// </summary>
+    internal static long[] ApplyFairseqRemap(IReadOnlyList<int> rawIds)
+    {
+        var mapped = new long[rawIds.Count];
+        mapped[0] = 0; // <s> — the wrapper CreateSentencePiece added via addBeginningOfSentence
+        for (int i = 1; i < rawIds.Count - 1; i++)
+            mapped[i] = rawIds[i] == 0 ? 3 : rawIds[i] + 1; // raw unk id is 0 for this vocab family (checked in InitializeAsync)
+        mapped[rawIds.Count - 1] = 2; // </s> — the wrapper added via addEndOfSentence
+        return mapped;
+    }
+
     /// <summary>Embeds a query (a question). RagClient only ever calls this single-item
     /// overload for the user's question — see <see cref="EmbedBatchAsync"/> for passages.</summary>
     public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) =>
@@ -272,12 +322,13 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     {
         if (_session is null || _tokenizer is null)
             throw new InvalidOperationException("Llama a InitializeAsync antes de usar el embedder ONNX.");
-        var ids = _tokenizer.EncodeToIds(text);
-        int n = Math.Max(1, ids.Count);
+        var rawIds = _tokenizer.EncodeToIds(text);
+        var idValues = _needsFairseqRemap ? ApplyFairseqRemap(rawIds) : rawIds.Select(x => (long)x).ToArray();
+        int n = Math.Max(1, idValues.Length);
         var idArr = new long[n];
         var mask = new long[n];
         var types = new long[n];
-        for (int i = 0; i < ids.Count; i++) { idArr[i] = ids[i]; mask[i] = 1; }
+        for (int i = 0; i < idValues.Length; i++) { idArr[i] = idValues[i]; mask[i] = 1; }
 
         var inputs = new List<NamedOnnxValue>
         {
