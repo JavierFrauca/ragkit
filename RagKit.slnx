@@ -7,6 +7,7 @@
   <Folder Name="/src/">
     <Project Path="src/RagKit.Dashboard/RagKit.Dashboard.csproj" />
     <Project Path="src/RagKit.Extractors/RagKit.Extractors.csproj" />
+    <Project Path="src/RagKit.Markdown/RagKit.Markdown.csproj" />
     <Project Path="src/RagKit.Mcp/RagKit.Mcp.csproj" />
     <Project Path="src/RagKit.Onnx/RagKit.Onnx.csproj" />
     <Project Path="src/RagKit.Postgres/RagKit.Postgres.csproj" />

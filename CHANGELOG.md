@@ -4,6 +4,18 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.2.1] - 2026-07-07
+
+### Corregido
+- **`RagKit.Markdown` no se publicó en NuGet.org con la 1.2.0** — el nuevo
+  proyecto se creó y se referenció desde `RagKit.Tests.csproj`, pero nunca se
+  añadió a `RagKit.slnx`, y el workflow de release empaqueta sobre la
+  solución (`dotnet pack RagKit.slnx`); el resto de paquetes (`RagKit`,
+  `RagKit.Onnx`, `RagKit.Extractors`, `RagKit.Mcp`, `RagKit.Postgres`,
+  `RagKit.SqlServer`, `RagKit.Dashboard`) sí salieron correctamente en 1.2.0.
+  Sin cambios de código — solo se añade `RagKit.Markdown.csproj` a
+  `RagKit.slnx` para que el pack lo incluya.
+
 ## [1.2.0] - 2026-07-06
 
 ### Añadido
