@@ -4,6 +4,23 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.2.2] - 2026-07-07
+
+### Corregido
+- **`IngestAsync` hacía una llamada tier-2 no solicitada cuando una tabla
+  atómica excedía `MaxChunkChars`, aunque `RagOptions.EnableContextualEmbedding`
+  estuviera en `false` (su valor por defecto).** Con `RagKit.Markdown`
+  convirtiendo PDF/CSV/HTML/DOCX en tablas reales, cualquier documento con una
+  tabla más grande que el presupuesto de chunk activo empezaba a bloquear la
+  ingesta en esa llamada — si el LLM tier-2 iba lento o no respondía, cada
+  documento con tabla grande se quedaba esperando (hasta los 300s por defecto
+  de `LlmConfig.TimeoutSeconds`), uno detrás de otro en una ingesta de carpeta,
+  dando la sensación de una cola colgada sin avanzar. La explicación de tabla
+  ahora solo se genera cuando `EnableContextualEmbedding = true` — con el flag
+  en su valor por defecto, una tabla grande se sigue embebiendo íntegra (nunca
+  se parte) pero sin ninguna llamada tier-2 añadida, igual que antes de la
+  1.2.0.
+
 ## [1.2.1] - 2026-07-07
 
 ### Corregido

@@ -311,11 +311,14 @@ public sealed class RagClient
         // exceeds maxChars, the embedder would otherwise truncate it in silence. Prepending
         // a short tier-2 explanation gives the vector a semantic signal in addition to
         // whatever of the literal table content fits; EmbeddedChunk.Text below stays the
-        // full table regardless, so citations are never affected.
+        // full table regardless, so citations are never affected. Gated behind
+        // EnableContextualEmbedding like the rest of this tier-2-during-ingest behavior —
+        // with the flag off (default), ingestion never makes an extra LLM call just
+        // because a table happens to be bigger than the chunk budget.
         var textsToEmbed = new List<string>(mdChunks.Count);
         foreach (var c in mdChunks)
         {
-            string? tableExplanation = c.IsAtomicTable && c.Text.Length > maxChars
+            string? tableExplanation = _options.EnableContextualEmbedding && c.IsAtomicTable && c.Text.Length > maxChars
                 ? Truncate(await _summarizer.SummarizeTableAsync(c.Text, ct).ConfigureAwait(false), TableExplanationMaxChars)
                 : null;
             textsToEmbed.Add(BuildEmbedText(docSummary, c.Breadcrumb, tableExplanation, c.Text));

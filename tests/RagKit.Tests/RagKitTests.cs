@@ -2066,18 +2066,47 @@ public class RagKitTests
         var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
-        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), classifierChat);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true }, embedder, store, new FakeChat("ok"), classifierChat);
         await rag.DefineDomainAsync("docs");
 
         var result = await rag.IngestAsync(markdown, "tabla.txt", domain: "docs");
         Assert.False(result.Rejected);
-        Assert.Equal(1, classifierChat.Calls); // exactly one tier-2 call: the table explanation
+        Assert.Equal(2, classifierChat.Calls); // doc summary + the table explanation
 
         var page = await rag.ListChunksAsync("tabla.txt", "docs");
         var tableChunk = Assert.Single(page.Items);
         Assert.Contains("fila1", tableChunk.Text);
         Assert.Contains("fila60", tableChunk.Text);
         Assert.DoesNotContain(explanation, tableChunk.Text); // explanation never persisted/cited
+    }
+
+    [Fact]
+    public async Task IngestAsync_with_an_oversized_table_makes_no_tier2_call_when_EnableContextualEmbedding_is_off()
+    {
+        // Regression test: an earlier build made the table-explanation tier-2 call
+        // unconditionally, even with the (default, off) flag disabled — any document
+        // with a table bigger than the chunk budget silently started blocking ingestion
+        // on an LLM call nobody opted into, hanging folder ingestion when that LLM was
+        // slow/unreachable. With the flag off, ingesting an oversized table must make
+        // ZERO tier-2 calls.
+        var rows = string.Join("\n", Enumerable.Range(1, 60).Select(i => $"| fila{i} | valor{i} |"));
+        var markdown = $"# Datos\n\n| columna a | columna b |\n|---|---|\n{rows}\n";
+        var classifierChat = new FakeChat("no debería llamarse nunca");
+
+        var embedder = new FakeEmbedder(maxChunkChars: 200);
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), classifierChat);
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(markdown, "tabla.txt", domain: "docs");
+        Assert.False(result.Rejected);
+        Assert.Equal(0, classifierChat.Calls);
+
+        var page = await rag.ListChunksAsync("tabla.txt", "docs");
+        var tableChunk = Assert.Single(page.Items);
+        Assert.Contains("fila60", tableChunk.Text); // table still kept whole, just without the explanation
     }
 
     // --- Fase 3: embedding contextual (flag) ------------------------------------------
