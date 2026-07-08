@@ -304,8 +304,9 @@ public sealed class RagClient
             return new IngestResult(source, domain, labelArr, 0, Confidence: confidence);
 
         string? docSummary = _options.EnableContextualEmbedding
-            ? Truncate(await _summarizer.SummarizeDocumentAsync(text, ct).ConfigureAwait(false), DocSummaryMaxChars)
+            ? await SafeSummarizeAsync(t => _summarizer.SummarizeDocumentAsync(text, t), ct).ConfigureAwait(false)
             : null;
+        if (docSummary is not null) docSummary = Truncate(docSummary, DocSummaryMaxChars);
 
         // Tables are always atomic (never split, whatever their size) — when one still
         // exceeds maxChars, the embedder would otherwise truncate it in silence. Prepending
@@ -318,9 +319,12 @@ public sealed class RagClient
         var textsToEmbed = new List<string>(mdChunks.Count);
         foreach (var c in mdChunks)
         {
-            string? tableExplanation = _options.EnableContextualEmbedding && c.IsAtomicTable && c.Text.Length > maxChars
-                ? Truncate(await _summarizer.SummarizeTableAsync(c.Text, ct).ConfigureAwait(false), TableExplanationMaxChars)
-                : null;
+            string? tableExplanation = null;
+            if (_options.EnableContextualEmbedding && c.IsAtomicTable && c.Text.Length > maxChars)
+            {
+                tableExplanation = await SafeSummarizeAsync(t => _summarizer.SummarizeTableAsync(c.Text, t), ct).ConfigureAwait(false);
+                if (tableExplanation is not null) tableExplanation = Truncate(tableExplanation, TableExplanationMaxChars);
+            }
             textsToEmbed.Add(BuildEmbedText(docSummary, c.Breadcrumb, tableExplanation, c.Text));
         }
 
@@ -351,6 +355,29 @@ public sealed class RagClient
     private const int TableExplanationMaxChars = 400;
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
+
+    /// <summary>Runs a best-effort tier-2 enrichment call (document summary / oversized-table
+    /// explanation) under its own short bound (<see cref="RagOptions.ContextualEmbeddingTimeoutSeconds"/>,
+    /// independent of <see cref="LlmConfig.TimeoutSeconds"/>) and swallows any failure —
+    /// timeout, HTTP error, malformed response. This is optional context for the embedding,
+    /// never required for a document to ingest: a slow or unavailable tier-2 endpoint degrades
+    /// to "no contextual prefix" for that document instead of blocking ingestion for up to
+    /// <c>LlmConfig.TimeoutSeconds × 3</c> (the classifier's own retry budget) or aborting it
+    /// outright. Real cancellation of <paramref name="ct"/> (the caller's own token) still
+    /// propagates — only our own timeout/errors are swallowed.</summary>
+    private async Task<string?> SafeSummarizeAsync(Func<CancellationToken, Task<string>> call, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.ContextualEmbeddingTimeoutSeconds)));
+        try
+        {
+            return await call(cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
 
     /// <summary>Assembles the text that gets EMBEDDED for one chunk — never what's
     /// persisted in <see cref="EmbeddedChunk.Text"/> or shown as a citation.</summary>

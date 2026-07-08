@@ -4,6 +4,46 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.3.1] - 2026-07-08
+
+### Corregido
+- **Un tier-2 lento o caído bloqueaba (o abortaba) la ingesta entera, no solo el
+  enriquecimiento contextual.** `EnableContextualEmbedding` añade dos llamadas
+  tier-2 "opcionales" a la ruta de ingesta (`Summarizer.SummarizeDocumentAsync`
+  una vez por documento; `SummarizeTableAsync` por cada tabla atómica que
+  supere el presupuesto de chunk): ambas usaban el `HttpClient` del
+  `Classifier`, con su `LlmConfig.TimeoutSeconds` (300s por defecto) y los 3
+  reintentos con backoff de `HttpRetry` — es decir, hasta ~15 minutos de
+  bloqueo real por documento si el endpoint tier-2 está lento o no responde,
+  y si el reintento final también fallaba, la excepción se propagaba y
+  abortaba la ingesta de ese documento entero (chunks incluidos), no solo el
+  resumen. Con solo 2 workers de ingesta concurrentes (caso típico de un
+  worker en background con `SemaphoreSlim`), un par de documentos así basta
+  para que el resto de la cola parezca colgada indefinidamente — el síntoma
+  reportado en producción ("solo procesa el primer fichero, el resto se
+  queda en cola para siempre") encaja exactamente con este patrón: apareció
+  al mismo tiempo que `EnableContextualEmbedding` (1.2.0), porque antes de
+  esa opción la ingesta con dominio explícito no hacía ninguna llamada
+  tier-2 en absoluto.
+  - Nuevo `RagOptions.ContextualEmbeddingTimeoutSeconds` (por defecto 20):
+    cota independiente de `LlmConfig.TimeoutSeconds` para estas dos llamadas
+    "best-effort" — no comparten presupuesto con la clasificación (que sí
+    debe poder esperar más porque es obligatoria para decidir el dominio).
+  - Ambas llamadas ahora van envueltas en un helper (`RagClient.
+    SafeSummarizeAsync`) que aplica esa cota vía un `CancellationTokenSource`
+    enlazado y absorbe cualquier fallo (timeout, error HTTP, respuesta
+    inválida): si el tier-2 no responde a tiempo o falla, la ingesta
+    continúa sin el prefijo contextual para ese documento/tabla en vez de
+    bloquearse o abortar — `EmbeddedChunk.Text` y el resto del documento se
+    persisten igual. La cancelación real del llamador (el `CancellationToken`
+    que ya recibía `IngestAsync`) se sigue propagando sin cambios: solo se
+    absorbe el timeout/error propio de este enriquecimiento opcional.
+  - Nota: no se ha podido confirmar que un tier-2 degradado sea la causa
+    exacta del incidente original (no reproducido contra el corpus real
+    disponible, ver 1.3.0) — pero el hueco de diseño era real e
+    independiente de la causa concreta: ninguna funcionalidad opcional
+    debería poder bloquear o abortar la ingesta completa de un documento.
+
 ## [1.3.0] - 2026-07-08
 
 ### Añadido

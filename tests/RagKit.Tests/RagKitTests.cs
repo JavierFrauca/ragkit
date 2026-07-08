@@ -26,6 +26,33 @@ sealed class FakeChat(string response) : IChatClient
     }
 }
 
+/// <summary>A tier-2 fake that never completes on its own (until its <see cref="ChatMessage"/>
+/// call's own <see cref="CancellationToken"/> fires) — used to verify contextual-embedding
+/// calls are bounded by their own short timeout instead of blocking ingestion.</summary>
+sealed class HangingChat : IChatClient
+{
+    public int Calls;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref Calls);
+        var tcs = new TaskCompletionSource<string>();
+        ct.Register(() => tcs.TrySetCanceled(ct));
+        return tcs.Task;
+    }
+}
+
+/// <summary>A tier-2 fake that always fails — used to verify contextual-embedding
+/// calls degrade gracefully instead of aborting the whole ingestion.</summary>
+sealed class ThrowingChat : IChatClient
+{
+    public int Calls;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref Calls);
+        throw new RagKitException("El LLM respondió 500: boom");
+    }
+}
+
 /// <summary>A tier-2 fake that answers per-call by inspecting the system prompt
 /// (router vs guardrail vs classifier), so one client can serve all three roles.</summary>
 sealed class RoutingChat(Func<IReadOnlyList<ChatMessage>, string> respond) : IChatClient
@@ -2233,6 +2260,99 @@ public class RagKitTests
 
         Assert.Equal(docSummary, await rag.GetDocumentSummaryAsync("d.txt"));
         Assert.Null(await rag.GetDocumentSummaryAsync("otro.txt"));
+    }
+
+    [Fact]
+    public async Task IngestAsync_with_EnableContextualEmbedding_still_ingests_when_the_document_summary_call_hangs()
+    {
+        // Regression test: before this fix, a slow/unresponsive tier-2 endpoint could block
+        // ingestion for LlmConfig.TimeoutSeconds × 3 retries (up to ~15 minutes by default)
+        // per document, because the doc-summary call awaited the classifier's own retry
+        // budget. ContextualEmbeddingTimeoutSeconds bounds it independently, and ingestion
+        // proceeds without the contextual prefix instead of hanging — this is what made
+        // KnowledgeVault's folder ingestion look permanently stuck behind a couple of slow
+        // tier-2 calls with only two concurrent ingest workers.
+        var hangingChat = new HangingChat();
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(
+            new RagOptions { EnableContextualEmbedding = true, ContextualEmbeddingTimeoutSeconds = 1 },
+            embedder, store, new FakeChat("ok"), hangingChat);
+        await rag.DefineDomainAsync("docs");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await rag.IngestAsync("contenido del documento", "d.txt", domain: "docs");
+        sw.Stop();
+
+        Assert.False(result.Rejected);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10),
+            $"la ingesta no debería esperar a un tier-2 colgado (tardó {sw.Elapsed})");
+        Assert.Null(await rag.GetDocumentSummaryAsync("d.txt")); // el resumen falló: no se persiste ninguno
+    }
+
+    [Fact]
+    public async Task IngestAsync_with_EnableContextualEmbedding_still_ingests_when_the_document_summary_call_throws()
+    {
+        var throwingChat = new ThrowingChat();
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
+            embedder, store, new FakeChat("ok"), throwingChat);
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync("contenido del documento", "d.txt", domain: "docs");
+
+        Assert.False(result.Rejected);
+        Assert.Equal(1, result.ChunkCount);
+        Assert.Equal(1, throwingChat.Calls);
+        Assert.Null(await rag.GetDocumentSummaryAsync("d.txt"));
+    }
+
+    [Fact]
+    public async Task IngestAsync_with_an_oversized_table_still_keeps_the_table_when_the_explanation_call_throws()
+    {
+        var rows = string.Join("\n", Enumerable.Range(1, 60).Select(i => $"| fila{i} | valor{i} |"));
+        var markdown = $"# Datos\n\n| columna a | columna b |\n|---|---|\n{rows}\n";
+        var throwingChat = new ThrowingChat();
+
+        var embedder = new FakeEmbedder(maxChunkChars: 200);
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
+            embedder, store, new FakeChat("ok"), throwingChat);
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(markdown, "tabla.txt", domain: "docs");
+        Assert.False(result.Rejected);
+
+        var page = await rag.ListChunksAsync("tabla.txt", "docs");
+        var tableChunk = Assert.Single(page.Items);
+        Assert.Contains("fila60", tableChunk.Text); // la tabla sobrevive aunque falle la explicación
+    }
+
+    [Fact]
+    public async Task IngestAsync_propagates_real_cancellation_instead_of_swallowing_it_as_a_contextual_embedding_timeout()
+    {
+        var hangingChat = new HangingChat();
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(
+            new RagOptions { EnableContextualEmbedding = true, ContextualEmbeddingTimeoutSeconds = 300 },
+            embedder, store, new FakeChat("ok"), hangingChat);
+        await rag.DefineDomainAsync("docs");
+
+        using var cts = new CancellationTokenSource();
+        var task = rag.IngestAsync("contenido del documento", "d.txt", domain: "docs", ct: cts.Token);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
 
     // --- FileExtractors: async/cancellable extraction ---------------------------------

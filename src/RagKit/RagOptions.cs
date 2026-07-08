@@ -169,4 +169,15 @@ public sealed class RagOptions
     /// to leave room for the prefix.
     /// </summary>
     public bool EnableContextualEmbedding { get; set; } = false;
+
+    /// <summary>
+    /// Bound (seconds) on each best-effort tier-2 enrichment call made when <see
+    /// cref="EnableContextualEmbedding"/> is on (document summary, oversized-table
+    /// explanation) — independent of <see cref="LlmConfig.TimeoutSeconds"/>, which
+    /// governs required tier-2 calls like classification. These calls are optional
+    /// context for the embedding: if the tier-2 endpoint is slow or unavailable,
+    /// ingestion proceeds without the contextual prefix rather than blocking on
+    /// <see cref="LlmConfig.TimeoutSeconds"/> (× 3 retries) per document. Default 20.
+    /// </summary>
+    public int ContextualEmbeddingTimeoutSeconds { get; set; } = 20;
 }
