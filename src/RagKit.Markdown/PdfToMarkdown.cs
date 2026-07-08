@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using System.Threading;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
@@ -29,12 +30,31 @@ public static class PdfToMarkdown
     // without depending on how many words share the row (see SplitIntoCells remarks).
     private const double ColumnGapFontSizeMultiplier = 2.5;
 
-    public static string Convert(string path)
+    public static string Convert(string path) => ConvertCore(path, CancellationToken.None);
+
+    /// <summary>
+    /// Async, cancellable conversion — the extraction itself runs on the thread pool
+    /// (PdfPig has no async API), but <paramref name="ct"/> is observed between pages
+    /// (<c>document.GetPages()</c> already iterates one at a time), so a caller CAN
+    /// actually abort mid-document instead of only giving up on waiting (contrast
+    /// with wrapping the synchronous <see cref="Convert"/> in <c>Task.Run</c> yourself,
+    /// which can only stop you from waiting further — the abandoned call keeps running
+    /// on its own thread regardless). Register via
+    /// <see cref="RagKit.FileExtractors.Register(string, Func{string, CancellationToken, Task{string}})"/>
+    /// to let <see cref="RagKit.FileExtractors.ExtractAsync"/> take advantage of this.
+    /// </summary>
+    public static Task<string> ConvertAsync(string path, CancellationToken ct = default)
+        => Task.Run(() => ConvertCore(path, ct), ct);
+
+    private static string ConvertCore(string path, CancellationToken ct)
     {
         using var document = PdfDocument.Open(path);
         var sb = new StringBuilder();
         foreach (var page in document.GetPages())
+        {
+            ct.ThrowIfCancellationRequested();
             AppendPage(sb, page);
+        }
         return sb.ToString().Trim();
     }
 

@@ -2234,4 +2234,135 @@ public class RagKitTests
         Assert.Equal(docSummary, await rag.GetDocumentSummaryAsync("d.txt"));
         Assert.Null(await rag.GetDocumentSummaryAsync("otro.txt"));
     }
+
+    // --- FileExtractors: async/cancellable extraction ---------------------------------
+
+    [Fact]
+    public async Task ExtractAsync_prefers_an_async_registered_extractor_and_observes_cancellation_mid_extraction()
+    {
+        // A dedicated fake extension avoids clashing with other tests' registrations on
+        // the shared static registry (.pdf/.docx/etc. are registered by several tests).
+        const string ext = ".fake-async-slow";
+        var started = new TaskCompletionSource();
+        FileExtractors.Register(ext, async (path, ct) =>
+        {
+            started.SetResult();
+            await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false); // never completes on its own
+            return "unreachable";
+        });
+
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + ext);
+        File.WriteAllText(tmp, "contenido");
+
+        using var cts = new CancellationTokenSource();
+        var task = FileExtractors.ExtractAsync(tmp, cts.Token);
+        await started.Task; // make sure the async extractor actually started before cancelling
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_falls_back_to_a_sync_registered_extractor_when_no_async_one_exists()
+    {
+        const string ext = ".fake-sync-only";
+        FileExtractors.Register(ext, path => "contenido sincrono de " + Path.GetFileName(path));
+
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + ext);
+        File.WriteAllText(tmp, "x");
+
+        var result = await FileExtractors.ExtractAsync(tmp);
+        Assert.Equal("contenido sincrono de " + Path.GetFileName(tmp), result);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_stops_waiting_on_a_hung_sync_extractor_without_waiting_for_it_to_finish()
+    {
+        // A synchronous extractor has no way to observe a token — ExtractAsync can only
+        // give up WAITING on it, not stop the abandoned work itself (documented behavior,
+        // contrast with the async-registered case above, which really does stop).
+        const string ext = ".fake-sync-hung";
+        FileExtractors.Register(ext, path => { Thread.Sleep(Timeout.Infinite); return "unreachable"; });
+
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + ext);
+        File.WriteAllText(tmp, "x");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => FileExtractors.ExtractAsync(tmp, cts.Token));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), "ExtractAsync debe dejar de esperar casi de inmediato, no bloquear indefinidamente.");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_falls_back_to_plain_text_for_an_unregistered_extension()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + ".unregistered-ext-xyz");
+        File.WriteAllText(tmp, "texto plano");
+        Assert.Equal("texto plano", await FileExtractors.ExtractAsync(tmp));
+    }
+
+    // --- PdfToMarkdown: async/cancellable conversion (fase de diagnóstico del cuelgue) --
+
+    [Fact]
+    public async Task PdfToMarkdownConvertAsync_produces_the_same_output_as_the_sync_Convert_when_not_cancelled()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "d.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        pg.AddText("contrato laboral indefinido", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        var sync = PdfToMarkdown.Convert(pdfPath);
+        var async_ = await PdfToMarkdown.ConvertAsync(pdfPath);
+        Assert.Equal(sync, async_);
+    }
+
+    [Fact]
+    public async Task PdfToMarkdownConvertAsync_honors_an_already_cancelled_token_without_processing_any_page()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "d.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        for (int p = 0; p < 3; p++)
+        {
+            var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+            pg.AddText($"Página {p}", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
+        }
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => PdfToMarkdown.ConvertAsync(pdfPath, cts.Token));
+    }
+
+    [Fact]
+    public async Task IngestFileAsync_extraction_is_cancellable_via_the_async_registered_extractor()
+    {
+        // Regression test for the reported production hang: RagClient.IngestFileAsync's
+        // `ct` must cover extraction too, not just classification/embedding — otherwise a
+        // slow/hung extractor can't be interrupted even by a caller that passes a token.
+        const string ext = ".fake-async-ingest";
+        FileExtractors.Register(ext, async (path, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
+            return "unreachable";
+        });
+
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-ingest-" + Guid.NewGuid().ToString("N") + ext);
+        File.WriteAllText(tmp, "x");
+
+        var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => rag.IngestFileAsync(tmp, domain: "docs", ct: cts.Token));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), "IngestFileAsync debe respetar la cancelación durante la extracción.");
+    }
 }

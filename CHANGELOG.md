@@ -4,6 +4,48 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.3.0] - 2026-07-08
+
+### Añadido
+- **Extracción async y cancelable** (`FileExtractors.Register(string, Func<string,
+  CancellationToken, Task<string>>)` + `FileExtractors.ExtractAsync`,
+  `RagKit.Markdown.PdfToMarkdown.ConvertAsync`): hasta ahora, todo extractor
+  registrado era una llamada síncrona (`Func<string, string>`) sin
+  `CancellationToken` — una vez arrancada, no había forma de interrumpirla,
+  ni siquiera pasando un token al `IngestFileAsync`/`IngestFileIfChangedAsync`
+  que la invoca, porque ese token nunca llegaba a la extracción. Se
+  investigó un reporte de producción de un PDF real del BOE que dejó la
+  extracción "colgada" horas con CPU casi al 0%; no se ha podido reproducir
+  el cuelgue con el `PdfToMarkdown` de la 1.2.3 contra los ~1.360 PDFs reales
+  disponibles (BOE consolidados + sentencias STS/TJUE), en secuencial ni en
+  paralelo — la hipótesis más probable, a falta de reproducir el caso exacto,
+  es que ese incidente concreto fuera en realidad el problema de memoria del
+  contenedor diagnosticado por separado (el proceso muriendo por OOM-kill sí
+  deja el puerto sin escuchar y el CPU en 0%, indistinguible a simple vista
+  de un cuelgue real). Aun así, el hueco de diseño era real e independiente
+  de esa causa concreta: ninguna combinación de timeout/cancelación del lado
+  del consumidor puede proteger contra un extractor que, una vez arrancado,
+  no tiene ninguna vía de salida.
+  - `FileExtractors.Register(ext, Func<string, CancellationToken, Task<string>>)`:
+    nuevo overload para registrar un extractor que observa el token de verdad
+    (independiente del registro síncrono existente — un conector puede
+    registrar ambos).
+  - `FileExtractors.ExtractAsync(path, ct)`: usa el extractor async si existe
+    (interrumpible de verdad); si no, ejecuta el síncrono en el thread pool
+    (aquí cancelar solo detiene la ESPERA del llamador — el trabajo
+    abandonado sigue corriendo en su propio hilo, ya que un
+    `Func<string,string>` no tiene forma de observar un token); si no hay
+    ningún extractor registrado, cae a `File.ReadAllTextAsync` (E/S
+    genuinamente cancelable).
+  - `PdfToMarkdown.ConvertAsync(path, ct)`: comprueba `ct` entre página y
+    página (`document.GetPages()` ya itera una a una), así que sí puede
+    abortar a mitad de documento. `MarkdownNormalizers.Enable()` registra
+    `.pdf` por las dos vías (síncrona para `Extract`, async para
+    `ExtractAsync`).
+  - `RagClient.IngestFileAsync`/`IngestFileIfChangedAsync` ahora usan
+    `ExtractAsync` — el `CancellationToken` que ya aceptaban cubre también la
+    extracción, no solo la clasificación/embedding posteriores.
+
 ## [1.2.3] - 2026-07-08
 
 ### Corregido

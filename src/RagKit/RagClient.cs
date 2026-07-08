@@ -366,11 +366,17 @@ public sealed class RagClient
         return string.Join("\n", parts);
     }
 
-    /// <summary>Ingest a file. Text is extracted via <see cref="FileExtractors"/>
-    /// (PDF/DOCX when RagKit.Extractors is enabled; plain text otherwise).</summary>
-    public Task<IngestResult> IngestFileAsync(string path, string? domain = null,
+    /// <summary>Ingest a file. Text is extracted via <see cref="FileExtractors.ExtractAsync"/>
+    /// (PDF/DOCX when RagKit.Extractors is enabled; plain text otherwise) — <paramref name="ct"/>
+    /// covers extraction too, not just classification/embedding, so an async-registered
+    /// extractor (e.g. RagKit.Markdown's <c>PdfToMarkdown.ConvertAsync</c>) can actually be
+    /// interrupted mid-document instead of only being given up on.</summary>
+    public async Task<IngestResult> IngestFileAsync(string path, string? domain = null,
         IEnumerable<string>? labels = null, CancellationToken ct = default)
-        => IngestAsync(FileExtractors.Extract(path), Path.GetFileName(path), domain, labels, ct);
+    {
+        var text = await FileExtractors.ExtractAsync(path, ct).ConfigureAwait(false);
+        return await IngestAsync(text, Path.GetFileName(path), domain, labels, ct).ConfigureAwait(false);
+    }
 
     private const string IngestManifestKind = "ingest-manifest";
 
@@ -425,10 +431,14 @@ public sealed class RagClient
     private static string EscapeKeyPart(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:");
 
     /// <summary>Idempotent counterpart of <see cref="IngestFileAsync"/> — see
-    /// <see cref="IngestIfChangedAsync"/>.</summary>
-    public Task<IngestResult> IngestFileIfChangedAsync(string path, string? domain = null,
+    /// <see cref="IngestIfChangedAsync"/>. Extraction goes through
+    /// <see cref="FileExtractors.ExtractAsync"/> too, same reasoning as <see cref="IngestFileAsync"/>.</summary>
+    public async Task<IngestResult> IngestFileIfChangedAsync(string path, string? domain = null,
         IEnumerable<string>? labels = null, CancellationToken ct = default)
-        => IngestIfChangedAsync(FileExtractors.Extract(path), Path.GetFileName(path), domain, labels, ct);
+    {
+        var text = await FileExtractors.ExtractAsync(path, ct).ConfigureAwait(false);
+        return await IngestIfChangedAsync(text, Path.GetFileName(path), domain, labels, ct).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Ingest every supported file under <paramref name="path"/> (see <see
