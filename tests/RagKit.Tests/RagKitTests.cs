@@ -2355,6 +2355,123 @@ public class RagKitTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
 
+    // --- Garantía: las 4 combinaciones markdown-real × EnableContextualEmbedding ingestan ---
+    // Cubre, con fakes rápidos y deterministas, la propiedad que se pidió garantizar tras el
+    // incidente de producción: la ingesta debe completarse tanto si el texto de entrada es
+    // Markdown real (headings/tablas, como lo produce RagKit.Markdown) como si es texto plano
+    // (sin conversión — el extractor de RagKit.Extractors o el fallback a texto plano), y tanto
+    // con EnableContextualEmbedding activo como desactivado. Cada test también comprueba que
+    // el resultado no fue rechazado y que produjo al menos un chunk.
+
+    private const string MarkdownLikeText =
+        "# Título del documento\n\nPárrafo introductorio con contenido normal.\n\n" +
+        "## Sección\n\n| columna a | columna b |\n|---|---|\n| valor1 | valor2 |\n\n" +
+        "Más texto de cierre tras la tabla.";
+
+    private const string PlainText =
+        "Esto es texto plano sin ninguna sintaxis Markdown, tal y como lo produce un " +
+        "extractor que no normaliza a Markdown (o el fallback de lectura directa). " +
+        "Varias frases seguidas para que el chunker tenga contenido real que trocear.";
+
+    [Fact]
+    public async Task IngestAsync_succeeds_with_markdown_input_and_EnableContextualEmbedding_on()
+    {
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
+            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 líneas"));
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(MarkdownLikeText, "md.txt", domain: "docs");
+
+        Assert.False(result.Rejected);
+        Assert.True(result.ChunkCount > 0);
+    }
+
+    [Fact]
+    public async Task IngestAsync_succeeds_with_plain_text_input_and_EnableContextualEmbedding_on()
+    {
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
+            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 líneas"));
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(PlainText, "plain.txt", domain: "docs");
+
+        Assert.False(result.Rejected);
+        Assert.True(result.ChunkCount > 0);
+    }
+
+    [Fact]
+    public async Task IngestAsync_succeeds_with_markdown_input_and_EnableContextualEmbedding_off()
+    {
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = false },
+            embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(MarkdownLikeText, "md.txt", domain: "docs");
+
+        Assert.False(result.Rejected);
+        Assert.True(result.ChunkCount > 0);
+    }
+
+    [Fact]
+    public async Task IngestAsync_succeeds_with_plain_text_input_and_EnableContextualEmbedding_off()
+    {
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions { EnableContextualEmbedding = false },
+            embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
+        await rag.DefineDomainAsync("docs");
+
+        var result = await rag.IngestAsync(PlainText, "plain.txt", domain: "docs");
+
+        Assert.False(result.Rejected);
+        Assert.True(result.ChunkCount > 0);
+    }
+
+    [Fact]
+    public async Task IngestFileAsync_succeeds_regardless_of_whether_MarkdownNormalizers_is_registered_for_the_extension()
+    {
+        // Dedicated fake extensions avoid clashing with other tests' global registrations
+        // (.pdf/.docx/etc. are registered by MarkdownNormalizers/DocumentExtractors elsewhere).
+        const string mdExt = ".fake-md-on";
+        const string plainExt = ".fake-md-off";
+        FileExtractors.Register(mdExt, _ => MarkdownLikeText);
+        // plainExt: deliberately NOT registered — exercises the File.ReadAllTextAsync fallback.
+
+        var mdFile = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + mdExt);
+        var plainFile = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + plainExt);
+        File.WriteAllText(mdFile, "contenido ignorado por el extractor fake");
+        File.WriteAllText(plainFile, PlainText);
+
+        var embedder = new FakeEmbedder();
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
+        await rag.DefineDomainAsync("docs");
+
+        var mdResult = await rag.IngestFileAsync(mdFile, "docs");
+        var plainResult = await rag.IngestFileAsync(plainFile, "docs");
+
+        Assert.False(mdResult.Rejected);
+        Assert.True(mdResult.ChunkCount > 0);
+        Assert.False(plainResult.Rejected);
+        Assert.True(plainResult.ChunkCount > 0);
+    }
+
     // --- FileExtractors: async/cancellable extraction ---------------------------------
 
     [Fact]

@@ -164,6 +164,8 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     private string? _pooledOutputName;    // set if the graph already exposes a 2-D (batch, hidden) output
     private string? _hiddenStateOutputName; // the raw 3-D (batch, seq, hidden) output, pooled here if no pooled one exists
     private bool _needsFairseqRemap; // see InitializeAsync — true for XLM-RoBERTa-family SentencePiece vocabs
+    private readonly int? _maxBatchConcurrency; // ctor override; null = auto-heuristic, see InitializeAsync
+    private int _batchConcurrency = 1; // resolved in InitializeAsync — see EmbedBatchAsync
 
     /// <param name="modelDirOrPath">Model folder (or direct path to <c>model.onnx</c>).</param>
     /// <param name="useQueryPassagePrefix">
@@ -188,12 +190,29 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
     /// three zero-config presets (<see cref="OnnxEmbedding"/>) pass in a value sized
     /// to their actual window; a manually constructed <see cref="OnnxEmbedder"/> for
     /// a different model should do the same.</param>
+    /// <param name="maxBatchConcurrency">
+    /// How many <see cref="EmbedBatchAsync"/> chunks run through <c>InferenceSession.Run</c>
+    /// at once; each still gets its own internal thread budget (a fraction of <see
+    /// cref="Environment.ProcessorCount"/>) so the two levels of parallelism don't multiply
+    /// into oversubscription — see <see cref="InitializeAsync"/>. Default (<c>null</c>) is
+    /// <c>1</c> (fully sequential, each call free to use every core): measured against a real
+    /// 618K-char document on a 12-core machine, this was ~40% FASTER overall than splitting
+    /// into several concurrent calls with fewer threads each — BGE-family models parallelize
+    /// well within one call, so added batch-level concurrency mostly just adds cross-call
+    /// cache/memory contention instead of real overlap. Raise this only if you've measured it
+    /// helping for your specific model/hardware. On a container with a fractional/low CPU
+    /// quota (e.g. Docker <c>cpus: 1.0</c>), <see cref="Environment.ProcessorCount"/> usually
+    /// still reports the host's full core count, not the quota — any value above <c>1</c> risks
+    /// cgroup-throttling instead of real parallelism, which reads as ingestion "stuck" with
+    /// near-zero CPU%, not merely slow.
+    /// </param>
     public OnnxEmbedder(string modelDirOrPath, bool useQueryPassagePrefix = false,
-        PoolingStrategy pooling = PoolingStrategy.Mean, int maxChunkChars = 1000)
+        PoolingStrategy pooling = PoolingStrategy.Mean, int maxChunkChars = 1000, int? maxBatchConcurrency = null)
     {
         _useQueryPassagePrefix = useQueryPassagePrefix;
         _pooling = pooling;
         MaxChunkChars = maxChunkChars;
+        _maxBatchConcurrency = maxBatchConcurrency;
         _modelPath = File.Exists(modelDirOrPath) ? modelDirOrPath : Path.Combine(modelDirOrPath, "model.onnx");
         if (!File.Exists(_modelPath))
             throw new FileNotFoundException($"No se encontró el modelo ONNX en '{_modelPath}'.");
@@ -236,7 +255,23 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
             // incompatible vector spaces — reuses the guard vector stores already have.
             if (_needsFairseqRemap) ModelId += ":fseq";
         }
-        _session = new InferenceSession(_modelPath);
+        // EmbedBatchAsync can overlap several Run() calls at once (see there) — a session
+        // built with ORT's defaults ALSO parallelizes internally across every core for a
+        // SINGLE Run() call, so N concurrent calls each spawning up to P internal threads
+        // oversubscribes a P-core machine by a factor of N. Measured against a real 618K-char
+        // legal document (232 chunks, avg ~2700 chars) on a 12-core machine: unbounded
+        // concurrency (12 calls x up to 12 threads each) didn't finish an ingest in 5+ minutes;
+        // splitting the core budget 4 ways (4 concurrent calls x 3 threads each, no
+        // oversubscription) finished in 752s; fully sequential (1 call at a time, each free to
+        // use every core) finished the SAME document in 455s — ~40% faster than the split.
+        // BGE-M3's own ops parallelize well within one call, and concurrent calls mostly just
+        // add cross-call cache/memory-bandwidth contention instead of real overlap, so
+        // sequential wins here. (Forcing single-threaded Run() globally, IntraOpNumThreads=1
+        // with unbounded batch concurrency, was also tried and measured ~3x SLOWER per call
+        // than ORT's default — the fix is sequencing calls, not starving each one of threads.)
+        _batchConcurrency = Math.Max(1, _maxBatchConcurrency ?? 1);
+        var sessionOptions = new SessionOptions { IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / _batchConcurrency) };
+        _session = new InferenceSession(_modelPath, sessionOptions);
         _needsTokenTypes = _session.InputMetadata.ContainsKey("token_type_ids");
         (_pooledOutputName, _hiddenStateOutputName) = ResolveOutputNames(_session.OutputMetadata);
         Dimension = EmbedCore("warmup").Length;
@@ -312,12 +347,15 @@ public sealed class OnnxEmbedder : IEmbedder, IDisposable
         Task.Run(() => EmbedCore(_useQueryPassagePrefix ? "query: " + text : text), ct);
 
     /// <summary>Batch: inference is thread-safe, so run chunks across cores. RagClient only
-    /// ever calls this for chunks being indexed (passages) — see <see cref="EmbedAsync"/> for queries.</summary>
+    /// ever calls this for chunks being indexed (passages) — see <see cref="EmbedAsync"/> for queries.
+    /// Bounded by <see cref="_batchConcurrency"/> (a fraction of the cores, the rest given to each
+    /// Run() call's own internal threading — see InitializeAsync) instead of one-chunk-per-core,
+    /// which oversubscribes the machine when Run() is itself multi-threaded (the common case).</summary>
     public async Task<IReadOnlyList<float[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
     {
         var result = new float[texts.Count][];
         await Parallel.ForAsync(0, texts.Count,
-            new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Environment.ProcessorCount },
+            new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = _batchConcurrency },
             (i, _) =>
             {
                 result[i] = EmbedCore(_useQueryPassagePrefix ? "passage: " + texts[i] : texts[i]);

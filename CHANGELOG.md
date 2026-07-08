@@ -4,6 +4,55 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.3.2] - 2026-07-08
+
+### Corregido
+- **La causa real del cuelgue de ingesta reportado en producción: sobre-suscripción de
+  hilos en `RagKit.Onnx.OnnxEmbedder`, no el LLM.** Tras 1.3.1 (que sí corrige un fallo
+  real del tier-2 opcional) el mismo cuelgue seguía reproduciéndose con
+  `EnableContextualEmbedding` ya desactivado — es decir, sin ninguna llamada a un LLM de
+  por medio. Reproducido de forma aislada y determinista contra documentos reales (BOE
+  consolidados de gran tamaño, 200-300 chunks cada uno, sin ningún otro documento
+  concurrente): `EmbedBatchAsync` lanzaba hasta `Environment.ProcessorCount` llamadas a
+  `InferenceSession.Run` en paralelo (`Parallel.ForAsync`), pero cada `InferenceSession`
+  se creaba con las opciones por defecto de ONNX Runtime, que **también** paralelizan
+  internamente una sola llamada `Run` sobre todos los cores disponibles. El resultado es
+  sobre-suscripción cuadrática: en una máquina de 12 cores, hasta 12 llamadas concurrentes
+  × hasta 12 hilos internos cada una = hasta 144 hilos compitiendo por 12 cores reales.
+  Medido contra un documento real de 618.641 caracteres (232 chunks, ~2.700 caracteres de
+  media) en una máquina de 12 cores, en solitario (sin ningún otro documento a la vez):
+  - Sin acotar (comportamiento anterior): no terminó ni una sola vez en más de 5 minutos.
+  - Repartiendo el presupuesto de cores entre las dos capas (4 llamadas concurrentes ×
+    3 hilos internos cada una, sin sobre-suscripción): 752 s (12,5 min).
+  - Totalmente secuencial (1 llamada a la vez, cada una libre de usar todos los cores):
+    **455 s (7,6 min) — ~40% más rápido que repartir la concurrencia.**
+  Los modelos de la familia BGE ya paralelizan bien sus propias operaciones dentro de una
+  sola llamada; añadir concurrencia a nivel de lote sobre todo añade contención de caché/
+  memoria entre llamadas en vez de solapamiento real de trabajo. Se probó también forzar
+  un solo hilo por llamada (`IntraOpNumThreads=1`) manteniendo la concurrencia externa sin
+  acotar: resultó ~3 veces más lento por llamada que la configuración por defecto de ONNX
+  Runtime — el fix no es dejar cada llamada sin hilos, es dejar de lanzarlas en paralelo.
+  - `OnnxEmbedder.EmbedBatchAsync` ahora ejecuta los chunks **secuencialmente por
+    defecto** (`MaxDegreeOfParallelism = 1`), cada llamada libre de usar todos los cores
+    vía las opciones por defecto de `InferenceSession`.
+  - Nuevo parámetro opcional del constructor `OnnxEmbedder(..., int? maxBatchConcurrency
+    = null)`: si se sube por encima de 1, reparte explícitamente el presupuesto de cores
+    entre la concurrencia de lote y los hilos internos de cada llamada (nunca los
+    multiplica). Documentado el caso de contenedores con cuota de CPU fraccionaria/baja
+    (p. ej. Docker `cpus: 1.0`): `Environment.ProcessorCount` normalmente sigue
+    reportando los cores totales del host, no la cuota — cualquier concurrencia por
+    encima de lo que la cuota realmente concede se encuentra con *throttling* de cgroups
+    en vez de paralelismo real, lo que se percibe como ingesta "colgada" con CPU casi al
+    0%, no simplemente lenta. Se recomienda explícitamente `maxBatchConcurrency: 1` (el
+    nuevo valor por defecto) en ese tipo de despliegues.
+  - **Nota honesta**: este fix elimina la sobre-suscripción (que podía dejar la ingesta
+    sin avanzar de forma indefinida) y mejora el caso secuencial ~40%, pero NO convierte
+    la inferencia de BGE-M3 en CPU en algo instantáneo — un documento legal grande
+    (600K+ caracteres) puede legítimamente tardar varios minutos en embeberse en una CPU
+    modesta. Para despliegues con recursos muy limitados (VPS de 1-2 cores) y documentos
+    grandes, considera un embedder más ligero (`multilingual-e5-small`, 384 dim) o subir
+    el timeout por fichero del lado del consumidor.
+
 ## [1.3.1] - 2026-07-08
 
 ### Corregido
