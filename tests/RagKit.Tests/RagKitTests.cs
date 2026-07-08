@@ -1975,6 +1975,82 @@ public class RagKitTests
         Assert.Contains("contrato", md);
     }
 
+    [Fact]
+    public void PdfToMarkdown_detects_a_multi_column_table_as_one_atomic_markdown_table()
+    {
+        // Regression test: an earlier build grouped a genuinely columnar table by
+        // COLUMN instead of by ROW (PdfPig's DocstrumBoundingBoxes clusters nearby
+        // text regardless of row/column semantics), and a later per-row-relative gap
+        // heuristic silently merged short rows (like a 3-column header) back into
+        // prose because their own median gap was already "large". Both produced
+        // unusable output for a completely ordinary invoice-style table.
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "invoice.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        double y = 780;
+        pg.AddText("Factura de servicios profesionales", 16, new UglyToad.PdfPig.Core.PdfPoint(40, y), font);
+        y -= 30;
+        (string a, string bCol, string c)[] rows =
+        {
+            ("Concepto", "Cantidad", "Importe"),
+            ("Consultoria fiscal", "10 h", "450,00 EUR"),
+            ("Presentacion IVA", "1", "80,00 EUR"),
+            ("Total", "", "1710,00 EUR"),
+        };
+        foreach (var (a, bCol, c) in rows)
+        {
+            pg.AddText(a, 10, new UglyToad.PdfPig.Core.PdfPoint(40, y), font);
+            pg.AddText(bCol, 10, new UglyToad.PdfPig.Core.PdfPoint(260, y), font);
+            pg.AddText(c, 10, new UglyToad.PdfPig.Core.PdfPoint(380, y), font);
+            y -= 15;
+        }
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        var md = PdfToMarkdown.Convert(pdfPath);
+
+        Assert.Contains("## Factura de servicios profesionales", md);
+        // Every data row lands as ONE Markdown table row (source-order preserved),
+        // not scattered/merged into prose or split across separate table fragments.
+        Assert.Contains("| Concepto | Cantidad | Importe |", md);
+        Assert.Contains("| Consultoria fiscal | 10 h | 450,00 EUR |", md);
+        Assert.Contains("| Presentacion IVA | 1 | 80,00 EUR |", md);
+        Assert.Contains("| Total |", md);
+
+        // A single Markdown table (one separator ROW), not fragmented into several
+        // disconnected tables by rows that failed to be recognized as such. Matched
+        // per whole trimmed LINE (not a plain substring count): a 3-column separator
+        // row like "| --- | --- | --- |" contains the substring "| --- |" twice on its own.
+        var separatorRows = md.Split('\n').Count(line =>
+            System.Text.RegularExpressions.Regex.IsMatch(line.Trim(), @"^\|(\s*---\s*\|)+$"));
+        Assert.Equal(1, separatorRows);
+    }
+
+    [Fact]
+    public async Task PdfToMarkdown_stays_fast_on_pages_with_many_duplicate_coordinate_words()
+    {
+        // Regression test: an earlier build used PdfPig's DocstrumBoundingBoxes for
+        // page segmentation, which degrades catastrophically (empirically ~cubic) on
+        // pages with many duplicate/near-duplicate word coordinates — a real-world
+        // pattern in scanned/re-flowed PDFs (8000 such words took 4m44s). PdfToMarkdown
+        // no longer calls that API at all, so this must stay well under a second.
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "dense.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        for (int i = 0; i < 8000; i++)
+            pg.AddText("X", 6, new UglyToad.PdfPig.Core.PdfPoint(100, 400), font); // same point, every time
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        var task = Task.Run(() => PdfToMarkdown.Convert(pdfPath));
+        var winner = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.Same(task, winner); // "PdfToMarkdown no debe tardar más de unos segundos, ni siquiera con coordenadas degeneradas."
+    }
+
     // --- Fase 2: MarkdownChunker estructural + tamaño variable por embedder -----------
 
     [Fact]

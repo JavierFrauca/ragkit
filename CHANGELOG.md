@@ -4,6 +4,35 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.2.3] - 2026-07-08
+
+### Corregido
+- **`PdfToMarkdown` no detectaba tablas reales de varias columnas, y podía
+  colgarse horas en páginas con coordenadas de palabra duplicadas/casi
+  duplicadas** (típico de PDFs escaneados o re-procesados con capas de texto
+  superpuestas). Ambos problemas venían de usar `PdfPig.DocstrumBoundingBoxes`/
+  `UnsupervisedReadingOrderDetector` para segmentar la página:
+  - Ese clustering agrupa el contenido por **columna**, no por fila, cuando
+    hay separación horizontal amplia entre columnas y poca separación
+    vertical entre filas — exactamente el patrón de una tabla real. El
+    resultado eran 2-3 bloques de texto, uno por columna, sin ninguna
+    relación de fila entre ellos: la tabla se perdía por completo.
+  - Ese mismo clustering degrada de forma catastrófica (empíricamente
+    cúbica) ante muchas palabras con coordenadas iguales o casi iguales:
+    3.000 palabras duplicadas tardaban 9,4s; 5.000, 50,3s; 8.000, **4m 44s**.
+    Sin ningún `CancellationToken` en esa ruta, nada podía interrumpirlo —
+    una sola página así podía tardar horas y bloquear el resto de una
+    ingesta de carpeta.
+  `PdfToMarkdown` ya no usa esa API. Ahora agrupa las palabras en filas
+  directamente por posición Y (orden + tolerancia, sin ningún algoritmo de
+  clustering) y ordena cada fila de izquierda a derecha por X — una fila es
+  candidata a tabla si sus huecos horizontales superan un umbral **absoluto**
+  derivado del tamaño de fuente (no un umbral relativo al propio hueco
+  mediano de la fila, que fallaba con filas de pocas palabras como una
+  cabecera de 3 columnas). El caso de 8.000 palabras duplicadas pasa de
+  4m 44s a **0,7s**, y una tabla real de factura/nómina sale como una única
+  tabla Markdown atómica en vez de columnas sueltas.
+
 ## [1.2.2] - 2026-07-07
 
 ### Corregido
