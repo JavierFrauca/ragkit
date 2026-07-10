@@ -299,6 +299,12 @@ public enum AgentToolScope
     /// <summary>Externally registered tools (e.g. MCP connectors) via <see cref="RagClient.RegisterTool"/>.</summary>
     External = 1 << 2,
 
+    /// <summary>Lets <c>search_knowledge_base</c> take an explicit <c>domain</c> argument per
+    /// call, narrowing to it, or search every domain when the argument is omitted. Without this
+    /// flag the tool stays locked to the turn's routed domain no matter what the model passes —
+    /// this flag is what lets it deliberately escape that once it decides routing picked wrong.</summary>
+    CrossDomainSearch = 1 << 3,
+
     /// <summary>Every tool — the behavior before this scope existed. Not safe for untrusted callers.</summary>
-    All = Classification | Mutation | External,
+    All = Classification | Mutation | External | CrossDomainSearch,
 }

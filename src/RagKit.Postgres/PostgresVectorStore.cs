@@ -52,6 +52,7 @@ public sealed class PostgresVectorStore : IVectorStore
             CREATE TABLE IF NOT EXISTS {Chunks} (
                 id uuid PRIMARY KEY, source text, body text, domain text, labels text[], embedding vector({dimension}),
                 ingested_at_utc timestamptz NULL);
+            ALTER TABLE {Chunks} ADD COLUMN IF NOT EXISTS chunk_index int NULL;
             """, ct).ConfigureAwait(false);
 
         await using (var read = _ds.CreateCommand($"SELECT model_id, dimension FROM {Meta} WHERE id = 1"))
@@ -133,10 +134,10 @@ public sealed class PostgresVectorStore : IVectorStore
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
     public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
-        DateTime ingestedAtUtc = default, CancellationToken ct = default)
+        DateTime ingestedAtUtc = default, int chunkIndex = -1, CancellationToken ct = default)
     {
         await using var cmd = _ds.CreateCommand(
-            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES(@id,@s,@b,@dom,@lbl,@emb::vector,@ing)");
+            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc,chunk_index) VALUES(@id,@s,@b,@dom,@lbl,@emb::vector,@ing,@ci)");
         cmd.Parameters.AddWithValue("id", Guid.NewGuid());
         cmd.Parameters.AddWithValue("s", source);
         cmd.Parameters.AddWithValue("b", text);
@@ -144,6 +145,7 @@ public sealed class PostgresVectorStore : IVectorStore
         cmd.Parameters.AddWithValue("lbl", labels.ToArray());
         cmd.Parameters.AddWithValue("emb", Literal(vector));
         cmd.Parameters.AddWithValue("ing", ingestedAtUtc == default ? (object)DBNull.Value : ingestedAtUtc);
+        cmd.Parameters.AddWithValue("ci", chunkIndex);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -164,7 +166,7 @@ public sealed class PostgresVectorStore : IVectorStore
             for (int i = 0; i < batch.Length; i++)
             {
                 var c = batch[i];
-                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},@emb{i}::vector,@ing{i})");
+                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},@emb{i}::vector,@ing{i},@ci{i})");
                 cmd.Parameters.AddWithValue($"id{i}", Guid.NewGuid());
                 cmd.Parameters.AddWithValue($"s{i}", c.Source);
                 cmd.Parameters.AddWithValue($"b{i}", c.Text);
@@ -172,8 +174,9 @@ public sealed class PostgresVectorStore : IVectorStore
                 cmd.Parameters.AddWithValue($"lbl{i}", c.Labels.ToArray());
                 cmd.Parameters.AddWithValue($"emb{i}", Literal(c.Vector));
                 cmd.Parameters.AddWithValue($"ing{i}", c.IngestedAtUtc == default ? (object)DBNull.Value : c.IngestedAtUtc);
+                cmd.Parameters.AddWithValue($"ci{i}", c.ChunkIndex);
             }
-            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES {string.Join(",", values)}";
+            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc,chunk_index) VALUES {string.Join(",", values)}";
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
     }
@@ -184,7 +187,7 @@ public sealed class PostgresVectorStore : IVectorStore
         await using var cmd = _ds.CreateCommand($"""
             SELECT source, body, domain, labels, 1 - (embedding <=> @q::vector) AS score, id
             FROM {Chunks}
-            WHERE (@dom IS NULL OR domain = @dom)
+            WHERE (@dom::text IS NULL OR domain = @dom::text)
               AND (cardinality(@req) = 0 OR labels @> @req)
             ORDER BY embedding <=> @q::vector
             LIMIT @k
@@ -213,20 +216,21 @@ public sealed class PostgresVectorStore : IVectorStore
     public async Task<IReadOnlyList<StoredChunk>> EnumerateAsync(CancellationToken ct = default)
     {
         var list = new List<StoredChunk>();
-        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels, ingested_at_utc, id FROM {Chunks}");
+        await using var cmd = _ds.CreateCommand($"SELECT source, body, domain, labels, ingested_at_utc, id, chunk_index FROM {Chunks}");
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString()));
+            var chunkIndex = r.IsDBNull(6) ? -1 : r.GetInt32(6);
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString(), chunkIndex));
         }
         return list;
     }
 
     public async Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
     {
-        await using var cmd = _ds.CreateCommand($"DELETE FROM {Chunks} WHERE source=@s AND (@dom IS NULL OR domain=@dom)");
+        await using var cmd = _ds.CreateCommand($"DELETE FROM {Chunks} WHERE source=@s AND (@dom::text IS NULL OR domain=@dom::text)");
         cmd.Parameters.AddWithValue("s", source);
         cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
         return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -249,28 +253,33 @@ public sealed class PostgresVectorStore : IVectorStore
     public async Task<ChunkPage> ListChunksAsync(string source, string? domain = null, int take = 100, string? cursor = null, CancellationToken ct = default)
     {
         await using var cmd = _ds.CreateCommand($"""
-            SELECT source, body, domain, labels, ingested_at_utc, id
+            SELECT source, body, domain, labels, ingested_at_utc, id, chunk_index
             FROM {Chunks}
-            WHERE source=@s AND (@dom IS NULL OR domain=@dom) AND (@cur::uuid IS NULL OR id > @cur::uuid)
+            WHERE source=@s AND (@dom::text IS NULL OR domain=@dom::text) AND (@cur::uuid IS NULL OR id > @cur::uuid)
             ORDER BY id
             LIMIT @take
             """);
         cmd.Parameters.AddWithValue("s", source);
         cmd.Parameters.AddWithValue("dom", (object?)domain ?? DBNull.Value);
         cmd.Parameters.AddWithValue("cur", (object?)cursor ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("take", take);
+        // Fetch one extra row over `take` so a page that happens to end exactly at the last
+        // chunk isn't mistaken for "there might be more" — see the SQL Server sibling for the
+        // same fix and why: `items.Count == take` alone can't tell a full-and-final page from
+        // a full-and-there's-more one.
+        cmd.Parameters.AddWithValue("take", take + 1);
 
         var items = new List<StoredChunk>();
-        string? lastId = null;
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>() : (string[])r.GetValue(3);
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            lastId = r.GetGuid(5).ToString();
-            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, lastId));
+            var id = r.GetGuid(5).ToString();
+            var chunkIndex = r.IsDBNull(6) ? -1 : r.GetInt32(6);
+            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, id, chunkIndex));
         }
-        string? next = items.Count == take ? lastId : null;
+        string? next = items.Count > take ? items[take - 1].Id : null;
+        if (items.Count > take) items.RemoveAt(items.Count - 1);
         return new ChunkPage(items, next);
     }
 

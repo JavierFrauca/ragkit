@@ -11,7 +11,7 @@ namespace RagKit;
 /// </summary>
 public sealed class InMemoryVectorStore : IVectorStore
 {
-    private sealed record Item(string Id, string Source, string Text, string? Domain, string[] Labels, float[] Vec, DateTime IngestedAtUtc);
+    private sealed record Item(string Id, string Source, string Text, string? Domain, string[] Labels, float[] Vec, DateTime IngestedAtUtc, int ChunkIndex = -1);
 
     private sealed class Meta
     {
@@ -121,12 +121,12 @@ public sealed class InMemoryVectorStore : IVectorStore
     }
 
     public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
-        DateTime ingestedAtUtc = default, CancellationToken ct = default)
+        DateTime ingestedAtUtc = default, int chunkIndex = -1, CancellationToken ct = default)
     {
         lock (_lock)
         {
             EnsureInit();
-            _items.Add(new Item(Guid.NewGuid().ToString(), source, text, domain, labels.ToArray(), vector, ingestedAtUtc));
+            _items.Add(new Item(Guid.NewGuid().ToString(), source, text, domain, labels.ToArray(), vector, ingestedAtUtc, chunkIndex));
         }
         return Task.CompletedTask;
     }
@@ -137,7 +137,7 @@ public sealed class InMemoryVectorStore : IVectorStore
         {
             EnsureInit();
             foreach (var c in chunks)
-                _items.Add(new Item(Guid.NewGuid().ToString(), c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector, c.IngestedAtUtc));
+                _items.Add(new Item(Guid.NewGuid().ToString(), c.Source, c.Text, c.Domain, c.Labels.ToArray(), c.Vector, c.IngestedAtUtc, c.ChunkIndex));
         }
         return Task.CompletedTask;
     }
@@ -169,7 +169,7 @@ public sealed class InMemoryVectorStore : IVectorStore
     {
         lock (_lock)
             return Task.FromResult<IReadOnlyList<StoredChunk>>(
-                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id)).ToList());
+                _items.Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id, i.ChunkIndex)).ToList());
     }
 
     public Task<int> DeleteBySourceAsync(string source, string? domain = null, CancellationToken ct = default)
@@ -215,7 +215,7 @@ public sealed class InMemoryVectorStore : IVectorStore
                 .ToList();
             int offset = cursor is null ? 0 : int.Parse(cursor);
             var page = matches.Skip(offset).Take(take)
-                .Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id))
+                .Select(i => new StoredChunk(i.Source, i.Text, i.Domain, i.Labels, i.IngestedAtUtc, i.Id, i.ChunkIndex))
                 .ToList();
             string? next = offset + page.Count < matches.Count ? (offset + page.Count).ToString() : null;
             return Task.FromResult(new ChunkPage(page, next));

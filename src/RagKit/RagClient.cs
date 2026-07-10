@@ -334,7 +334,7 @@ public sealed class RagClient
         var vectors = await _embedder.EmbedBatchAsync(textsToEmbed, ct).ConfigureAwait(false);
         var batch = new List<EmbeddedChunk>(mdChunks.Count);
         for (int i = 0; i < mdChunks.Count; i++)
-            batch.Add(new EmbeddedChunk(source, mdChunks[i].Text, domain, labelArr, vectors[i], now));
+            batch.Add(new EmbeddedChunk(source, mdChunks[i].Text, domain, labelArr, vectors[i], now, ChunkIndex: i));
         await _store.AddChunksAsync(batch, ct).ConfigureAwait(false);
         if (docSummary is not null)
             await _store.SaveCatalogEntryAsync(DocumentSummaryCatalogKind, source, docSummary, ct).ConfigureAwait(false);
@@ -342,7 +342,8 @@ public sealed class RagClient
         // Keep the lexical index in sync only once it's been loaded; otherwise the
         // first retrieval will enumerate these chunks from the store anyway.
         if (_options.Hybrid && Volatile.Read(ref _lexicalLoaded))
-            foreach (var c in batch) _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels, c.IngestedAtUtc));
+            foreach (var c in batch)
+                _lexical.Add(new StoredChunk(c.Source, c.Text, c.Domain, c.Labels, c.IngestedAtUtc, ChunkIndex: c.ChunkIndex));
 
         return new IngestResult(source, domain, labelArr, mdChunks.Count, Confidence: confidence);
     }
@@ -803,7 +804,7 @@ public sealed class RagClient
         if (!guard.Allowed)
             return new RagAnswer(_options.GuardrailRejectionMessage, Array.Empty<Citation>());
 
-        var search = new SearchTool(this, route.Domain);
+        var search = new SearchTool(this, route.Domain, toolScope.HasFlag(AgentToolScope.CrossDomainSearch));
         var tools = BuildAgentTools(search, route.Domain, toolScope);
         var specs = tools.Select(t => new ToolSpec(t.Name, t.Description, t.ParametersSchema)).ToList();
         var byName = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
@@ -891,7 +892,7 @@ public sealed class RagClient
         if (!guard.Allowed)
             return new AgentStream(RejectedAgentStreamAsync(_options.GuardrailRejectionMessage));
 
-        var search = new SearchTool(this, route.Domain);
+        var search = new SearchTool(this, route.Domain, toolScope.HasFlag(AgentToolScope.CrossDomainSearch));
         var tools = BuildAgentTools(search, route.Domain, toolScope);
         var specs = tools.Select(t => new ToolSpec(t.Name, t.Description, t.ParametersSchema)).ToList();
         var byName = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
@@ -1026,6 +1027,10 @@ public sealed class RagClient
             tools.Add(new ListDomainsTool(this));
             tools.Add(new ListLabelsTool(this));
             tools.Add(new GetDocumentSummaryTool(this));
+            tools.Add(new FindDomainsTool(this));
+            tools.Add(new FindLabelsTool(this));
+            tools.Add(new GetDocumentChunksTool(this));
+            tools.Add(new GetAdjacentChunkTool(this));
         }
         if (scope.HasFlag(AgentToolScope.Mutation))
         {
@@ -1155,7 +1160,10 @@ public sealed class RagClient
 
     // --- internals shared with ChatSession ----------------------------------
 
-    private async Task<float[]> Embed(string text, CancellationToken ct) => await _embedder.EmbedAsync(text, ct).ConfigureAwait(false);
+    /// <summary>Embeds arbitrary text with the configured <see cref="IEmbedder"/> — internal
+    /// rather than private so agent tools in <see cref="RagKit.Agent"/> (e.g. semantic
+    /// domain/label lookup) can reuse the exact same embedding space as ingestion/search.</summary>
+    internal async Task<float[]> Embed(string text, CancellationToken ct) => await _embedder.EmbedAsync(text, ct).ConfigureAwait(false);
 
     /// <summary>Central retrieval: vector search, optional hybrid RRF fusion with
     /// the BM25 lexical index, optional rerank, then top-k.</summary>

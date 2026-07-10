@@ -84,6 +84,45 @@ sealed class FakeAgentChat : IChatClient
     }
 }
 
+/// <summary>A tool-capable fake whose first turn calls search_knowledge_base with a given,
+/// caller-supplied arguments JSON (to test how SearchTool honors/ignores a model-supplied
+/// `domain`), then answers with a fixed final text.</summary>
+sealed class ScriptedSearchChat(string argumentsJson, string finalAnswer = "listo") : IChatClient
+{
+    private int _turn;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+        => Task.FromResult("plain");
+    public bool SupportsTools => true;
+    public Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
+    {
+        _turn++;
+        if (_turn == 1)
+            return Task.FromResult(new AgentTurn(null, new[]
+            {
+                new ToolCall("call_1", "search_knowledge_base", argumentsJson)
+            }));
+        return Task.FromResult(new AgentTurn(finalAnswer, Array.Empty<ToolCall>()));
+    }
+}
+
+/// <summary>A tool-capable fake whose first turn calls a given tool with given arguments,
+/// then "answers" by echoing back that tool's own result verbatim — lets tests assert on
+/// what a tool actually returned without white-box instantiating it.</summary>
+sealed class EchoToolResultChat(string toolName, string argumentsJson) : IChatClient
+{
+    private int _turn;
+    public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+        => Task.FromResult("plain");
+    public bool SupportsTools => true;
+    public Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
+    {
+        _turn++;
+        if (_turn == 1)
+            return Task.FromResult(new AgentTurn(null, new[] { new ToolCall("call_1", toolName, argumentsJson) }));
+        return Task.FromResult(new AgentTurn(messages[^1].Content ?? "", Array.Empty<ToolCall>()));
+    }
+}
+
 /// <summary>A tool-capable fake that answers immediately (no tool calls) but records the
 /// tool specs and messages it was offered — for asserting on scoping/history. Implements
 /// both <see cref="NextAsync"/> and <see cref="NextStreamAsync"/> so one spy covers both
@@ -646,10 +685,198 @@ public class RagKitTests
         Assert.Equal(
             new[]
             {
-                "search_knowledge_base", "list_domains", "list_labels", "get_document_summary", "create_domain",
+                "search_knowledge_base", "list_domains", "list_labels", "get_document_summary",
+                "find_domains", "find_labels", "get_document_chunks", "get_adjacent_chunk", "create_domain",
                 "create_label", "ingest_document", "create_profile", "create_guardrail",
             },
             spy.LastTools!.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task Search_tool_schema_exposes_domain_param_only_with_CrossDomainSearch_flag()
+    {
+        var spy = new SpyAgentChat();
+        var rag = await BuildAsync(spy, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+
+        await rag.AskAgentAsync("pregunta", "docs", tools: AgentToolScope.SearchOnly);
+        var withoutFlag = spy.LastTools!.Single(t => t.Name == "search_knowledge_base").ParametersSchema;
+
+        await rag.AskAgentAsync("pregunta", "docs", tools: AgentToolScope.SearchOnly | AgentToolScope.CrossDomainSearch);
+        var withFlag = spy.LastTools!.Single(t => t.Name == "search_knowledge_base").ParametersSchema;
+
+        Assert.DoesNotContain("\"domain\"", withoutFlag);
+        Assert.Contains("\"domain\"", withFlag);
+    }
+
+    [Fact]
+    public async Task Search_tool_without_CrossDomainSearch_ignores_a_domain_argument_from_the_model()
+    {
+        var chat = new ScriptedSearchChat("""{"query":"factura","domain":"other"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.DefineDomainAsync("other");
+        await rag.IngestAsync("una factura de luz de enero", "factura.txt", domain: "other");
+
+        var ans = await rag.AskAgentAsync("factura", "docs", tools: AgentToolScope.SearchOnly);
+
+        Assert.Empty(ans.Citations); // "other" stays out of reach: routed to "docs", flag off
+    }
+
+    [Fact]
+    public async Task Search_tool_with_CrossDomainSearch_honors_an_explicit_domain_argument()
+    {
+        var chat = new ScriptedSearchChat("""{"query":"factura","domain":"other"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.DefineDomainAsync("other");
+        await rag.IngestAsync("una factura de luz de enero", "factura.txt", domain: "other");
+
+        var ans = await rag.AskAgentAsync("factura", "docs",
+            tools: AgentToolScope.SearchOnly | AgentToolScope.CrossDomainSearch);
+
+        Assert.Single(ans.Citations);
+        Assert.Equal("factura.txt", ans.Citations[0].Source);
+    }
+
+    [Fact]
+    public async Task Search_tool_with_CrossDomainSearch_and_no_domain_argument_searches_every_domain()
+    {
+        var chat = new ScriptedSearchChat("""{"query":"factura"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.DefineDomainAsync("other");
+        await rag.IngestAsync("una factura de luz de enero", "factura.txt", domain: "other");
+
+        var ans = await rag.AskAgentAsync("factura", "docs",
+            tools: AgentToolScope.SearchOnly | AgentToolScope.CrossDomainSearch);
+
+        Assert.Single(ans.Citations); // found even though the routed turn's domain was "docs"
+        Assert.Equal("factura.txt", ans.Citations[0].Source);
+    }
+
+    [Fact]
+    public async Task Find_domains_ranks_by_semantic_similarity_of_description()
+    {
+        var chat = new EchoToolResultChat("find_domains", """{"query":"cuanto pagar de iva"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("fiscal", "impuestos iva irpf tributos");
+        await rag.DefineDomainAsync("rrhh", "personal nominas contratos");
+
+        var ans = await rag.AskAgentAsync("cuanto pagar de iva", domain: "fiscal", tools: AgentToolScope.Classification);
+
+        Assert.StartsWith("- fiscal", ans.Answer);
+    }
+
+    [Fact]
+    public async Task Find_labels_ranks_by_semantic_similarity_of_description()
+    {
+        var chat = new EchoToolResultChat("find_labels", """{"query":"necesito saber el porcentaje de iva"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("fiscal");
+        await rag.DefineLabelAsync("iva", "porcentaje tipo impositivo iva");
+        await rag.DefineLabelAsync("contrato", "clausulas duracion tipo de contrato laboral");
+
+        var ans = await rag.AskAgentAsync("necesito saber el porcentaje de iva", domain: "fiscal", tools: AgentToolScope.Classification);
+
+        Assert.StartsWith("- iva", ans.Answer);
+    }
+
+    [Fact]
+    public async Task Find_domains_respects_the_topK_argument()
+    {
+        var chat = new EchoToolResultChat("find_domains", """{"query":"impuestos","topK":1}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("fiscal", "impuestos iva irpf tributos");
+        await rag.DefineDomainAsync("rrhh", "personal nominas contratos");
+        await rag.DefineDomainAsync("construccion", "obra instalaciones oficios");
+
+        var ans = await rag.AskAgentAsync("impuestos", domain: "fiscal", tools: AgentToolScope.Classification);
+
+        Assert.Single(ans.Answer.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    [Fact]
+    public async Task IngestAsync_assigns_sequential_ChunkIndex_to_each_chunk()
+    {
+        var opts = new RagOptions { ChunkMaxChars = 40 };
+        var rag = await BuildAsync(new FakeChat("x"), new FakeChat("{}"), opts);
+        await rag.DefineDomainAsync("docs");
+        var text = string.Join(" ", Enumerable.Range(0, 20).Select(i => $"frase numero {i} de longitud media aqui."));
+
+        await rag.IngestAsync(text, "doc.txt", domain: "docs");
+
+        var page = await rag.ListChunksAsync("doc.txt", "docs", take: 100);
+        Assert.True(page.Items.Count > 1); // actually split into more than one chunk
+        var indices = page.Items.OrderBy(c => c.ChunkIndex).Select(c => c.ChunkIndex).ToList();
+        Assert.Equal(Enumerable.Range(0, page.Items.Count), indices); // 0,1,2,... no gaps/dupes
+    }
+
+    [Fact]
+    public async Task Get_document_chunks_returns_every_chunk_in_order()
+    {
+        var chat = new EchoToolResultChat("get_document_chunks", """{"source":"doc.txt"}""");
+        // The chunker's paragraph-fallback overlap defaults to 200 chars regardless of the
+        // budget, so ChunkMaxChars needs real headroom over that or the sliding window barely
+        // advances and the chunk count explodes (see MarkdownChunker.Chunk's `overlap = 200`).
+        var opts = new RagOptions { ChunkMaxChars = 1000 };
+        var rag = await BuildAsync(chat, new FakeChat("{}"), opts);
+        await rag.DefineDomainAsync("docs");
+        var text = string.Join(" ", Enumerable.Range(0, 80).Select(i => $"frase numero {i} de longitud media aqui."));
+        await rag.IngestAsync(text, "doc.txt", domain: "docs");
+
+        var ans = await rag.AskAgentAsync("da igual", domain: "docs", tools: AgentToolScope.Classification);
+
+        var lines = ans.Answer.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.StartsWith("[0]", lines[0]);
+        Assert.StartsWith($"[{lines.Length - 1}]", lines[^1]);
+    }
+
+    [Fact]
+    public async Task Get_adjacent_chunk_navigates_next_and_previous_and_handles_the_edges()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
+        var store = new InMemoryVectorStore(dir);
+        var embedder = new LocalEmbedder();
+        await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
+        var opts = new RagOptions { ChunkMaxChars = 1000 };
+
+        var ragForIngest = new RagClient(opts, embedder, store, new FakeChat("x"), new FakeChat("{}"));
+        await ragForIngest.DefineDomainAsync("docs");
+        var text = string.Join(" ", Enumerable.Range(0, 80).Select(i => $"frase numero {i} de longitud media aqui."));
+        await ragForIngest.IngestAsync(text, "doc.txt", domain: "docs");
+        var ordered = (await ragForIngest.ListChunksAsync("doc.txt", "docs", take: 200)).Items
+            .OrderBy(c => c.ChunkIndex).ToList();
+        Assert.True(ordered.Count >= 3, "the test needs at least a first/middle/last chunk");
+        var middle = ordered[1];
+
+        async Task<string> AdjacentAsync(string chunkId, string direction)
+        {
+            var chat = new EchoToolResultChat("get_adjacent_chunk",
+                $$"""{"source":"doc.txt","chunkId":"{{chunkId}}","direction":"{{direction}}"}""");
+            var rag = new RagClient(opts, embedder, store, chat, new FakeChat("{}"));
+            var ans = await rag.AskAgentAsync("x", domain: "docs", tools: AgentToolScope.Classification);
+            return ans.Answer;
+        }
+
+        Assert.StartsWith($"[{ordered[2].ChunkIndex}]", await AdjacentAsync(middle.Id, "next"));
+        Assert.StartsWith($"[{ordered[0].ChunkIndex}]", await AdjacentAsync(middle.Id, "previous"));
+        Assert.Contains("último chunk", await AdjacentAsync(ordered[^1].Id, "next"));
+        Assert.Contains("primer chunk", await AdjacentAsync(ordered[0].Id, "previous"));
+    }
+
+    [Fact]
+    public async Task Get_adjacent_chunk_reports_an_unknown_chunkId()
+    {
+        var chat = new EchoToolResultChat("get_adjacent_chunk",
+            """{"source":"doc.txt","chunkId":"no-existe","direction":"next"}""");
+        var rag = await BuildAsync(chat, new FakeChat("{}"));
+        await rag.DefineDomainAsync("docs");
+        await rag.IngestAsync("un texto cualquiera", "doc.txt", domain: "docs");
+
+        var ans = await rag.AskAgentAsync("x", domain: "docs", tools: AgentToolScope.Classification);
+
+        Assert.Contains("no se encontró", ans.Answer);
     }
 
     [Fact]
@@ -1223,7 +1450,7 @@ public class RagKitTests
 
         var chunks = new List<EmbeddedChunk>();
         for (int i = 0; i < 7; i++)
-            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow, ChunkIndex: i));
 
         await store.AddChunksAsync(chunks);
 
@@ -1231,6 +1458,7 @@ public class RagKitTests
         Assert.Equal(7, page.Items.Count);
         Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count());
         Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
+        Assert.Equal(Enumerable.Range(0, 7), page.Items.OrderBy(c => c.ChunkIndex).Select(c => c.ChunkIndex));
     }
 
     [Fact]
@@ -1295,7 +1523,7 @@ public class RagKitTests
 
         var chunks = new List<EmbeddedChunk>();
         for (int i = 0; i < 7; i++)
-            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow, ChunkIndex: i));
 
         await store.AddChunksAsync(chunks);
 
@@ -1303,6 +1531,7 @@ public class RagKitTests
         Assert.Equal(7, page.Items.Count);
         Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count()); // every id distinct
         Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
+        Assert.Equal(Enumerable.Range(0, 7), page.Items.OrderBy(c => c.ChunkIndex).Select(c => c.ChunkIndex));
     }
 
     [Fact]
@@ -1430,7 +1659,7 @@ public class RagKitTests
 
         var chunks = new List<EmbeddedChunk>();
         for (int i = 0; i < 7; i++)
-            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow));
+            chunks.Add(new EmbeddedChunk("batch.txt", $"parte {i}", "docs", Array.Empty<string>(), await emb.EmbedAsync($"parte {i}"), DateTime.UtcNow, ChunkIndex: i));
 
         await store.AddChunksAsync(chunks);
 
@@ -1438,6 +1667,7 @@ public class RagKitTests
         Assert.Equal(7, page.Items.Count);
         Assert.Equal(7, page.Items.Select(c => c.Id).Distinct().Count());
         Assert.All(page.Items, c => Assert.False(string.IsNullOrEmpty(c.Id)));
+        Assert.Equal(Enumerable.Range(0, 7), page.Items.OrderBy(c => c.ChunkIndex).Select(c => c.ChunkIndex));
     }
 
     // --- FR-01: delete by source ---------------------------------------------

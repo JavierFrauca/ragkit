@@ -59,6 +59,7 @@ public sealed class SqlServerVectorStore : IVectorStore
                 id uniqueidentifier PRIMARY KEY, source nvarchar(400), body nvarchar(max),
                 domain nvarchar(200) NULL, labels nvarchar(max) NULL, embedding vector({dimension}),
                 ingested_at_utc datetime2 NULL);
+            IF COL_LENGTH('{Chunks}', 'chunk_index') IS NULL ALTER TABLE {Chunks} ADD chunk_index int NULL;
             """, ct).ConfigureAwait(false);
 
         await using (var read = new SqlCommand($"SELECT model_id, dimension FROM {Meta} WHERE id=1", con))
@@ -154,11 +155,11 @@ public sealed class SqlServerVectorStore : IVectorStore
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
     public async Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
-        DateTime ingestedAtUtc = default, CancellationToken ct = default)
+        DateTime ingestedAtUtc = default, int chunkIndex = -1, CancellationToken ct = default)
     {
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new SqlCommand(
-            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES(@id,@s,@b,@dom,@lbl,CAST(@emb AS vector({_dim})),@ing)", con);
+            $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc,chunk_index) VALUES(@id,@s,@b,@dom,@lbl,CAST(@emb AS vector({_dim})),@ing,@ci)", con);
         cmd.Parameters.AddWithValue("@id", Guid.NewGuid());
         cmd.Parameters.AddWithValue("@s", source);
         cmd.Parameters.AddWithValue("@b", text);
@@ -166,6 +167,7 @@ public sealed class SqlServerVectorStore : IVectorStore
         cmd.Parameters.AddWithValue("@lbl", JsonSerializer.Serialize(labels));
         cmd.Parameters.AddWithValue("@emb", Literal(vector));
         cmd.Parameters.AddWithValue("@ing", ingestedAtUtc == default ? (object)DBNull.Value : ingestedAtUtc);
+        cmd.Parameters.AddWithValue("@ci", chunkIndex);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -188,7 +190,7 @@ public sealed class SqlServerVectorStore : IVectorStore
             for (int i = 0; i < batch.Length; i++)
             {
                 var c = batch[i];
-                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},CAST(@emb{i} AS vector({_dim})),@ing{i})");
+                values.Add($"(@id{i},@s{i},@b{i},@dom{i},@lbl{i},CAST(@emb{i} AS vector({_dim})),@ing{i},@ci{i})");
                 cmd.Parameters.AddWithValue($"@id{i}", Guid.NewGuid());
                 cmd.Parameters.AddWithValue($"@s{i}", c.Source);
                 cmd.Parameters.AddWithValue($"@b{i}", c.Text);
@@ -196,8 +198,9 @@ public sealed class SqlServerVectorStore : IVectorStore
                 cmd.Parameters.AddWithValue($"@lbl{i}", JsonSerializer.Serialize(c.Labels));
                 cmd.Parameters.AddWithValue($"@emb{i}", Literal(c.Vector));
                 cmd.Parameters.AddWithValue($"@ing{i}", c.IngestedAtUtc == default ? (object)DBNull.Value : c.IngestedAtUtc);
+                cmd.Parameters.AddWithValue($"@ci{i}", c.ChunkIndex);
             }
-            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc) VALUES {string.Join(",", values)}";
+            cmd.CommandText = $"INSERT INTO {Chunks}(id,source,body,domain,labels,embedding,ingested_at_utc,chunk_index) VALUES {string.Join(",", values)}";
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
     }
@@ -252,14 +255,15 @@ public sealed class SqlServerVectorStore : IVectorStore
     {
         var list = new List<StoredChunk>();
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels, ingested_at_utc, id FROM {Chunks}", con);
+        await using var cmd = new SqlCommand($"SELECT source, body, domain, labels, ingested_at_utc, id, chunk_index FROM {Chunks}", con);
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>()
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString()));
+            var chunkIndex = r.IsDBNull(6) ? -1 : r.GetInt32(6);
+            list.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, r.GetGuid(5).ToString(), chunkIndex));
         }
         return list;
     }
@@ -296,28 +300,32 @@ public sealed class SqlServerVectorStore : IVectorStore
         // of GUID ordering semantics, as long as the order is stable across calls.
         await using var con = await OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new SqlCommand($"""
-            SELECT TOP(@take) source, body, domain, labels, ingested_at_utc, id
+            SELECT TOP(@take) source, body, domain, labels, ingested_at_utc, id, chunk_index
             FROM {Chunks}
             WHERE source=@s AND (@dom IS NULL OR domain=@dom) AND (@cur IS NULL OR id > @cur)
             ORDER BY id
             """, con);
-        cmd.Parameters.AddWithValue("@take", take);
+        // Fetch one extra row over `take` so a page that happens to end exactly at the last
+        // chunk isn't mistaken for "there might be more" — `items.Count == take` alone can't
+        // tell a full-and-final page from a full-and-there's-more one.
+        cmd.Parameters.AddWithValue("@take", take + 1);
         cmd.Parameters.AddWithValue("@s", source);
         cmd.Parameters.AddWithValue("@dom", (object?)domain ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@cur", cursor is null ? DBNull.Value : Guid.Parse(cursor));
 
         var items = new List<StoredChunk>();
-        string? lastId = null;
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
             var labels = r.IsDBNull(3) ? Array.Empty<string>()
                 : JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>();
             var ingestedAt = r.IsDBNull(4) ? default : r.GetDateTime(4);
-            lastId = r.GetGuid(5).ToString();
-            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, lastId));
+            var id = r.GetGuid(5).ToString();
+            var chunkIndex = r.IsDBNull(6) ? -1 : r.GetInt32(6);
+            items.Add(new StoredChunk(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), labels, ingestedAt, id, chunkIndex));
         }
-        string? next = items.Count == take ? lastId : null;
+        string? next = items.Count > take ? items[take - 1].Id : null;
+        if (items.Count > take) items.RemoveAt(items.Count - 1);
         return new ChunkPage(items, next);
     }
 

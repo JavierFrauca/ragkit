@@ -108,9 +108,9 @@ public sealed class QdrantVectorStore : IVectorStore
         => string.IsNullOrWhiteSpace(json) ? Array.Empty<T>() : JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
 
     public Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
-        DateTime ingestedAtUtc = default, CancellationToken ct = default)
+        DateTime ingestedAtUtc = default, int chunkIndex = -1, CancellationToken ct = default)
         => UpsertAsync(_chunks, Guid.NewGuid().ToString(), vector,
-            new { source, text, domain, labels = labels.ToArray(), ingestedAtUtc = ingestedAtUtc.ToString("o") }, ct);
+            new { source, text, domain, labels = labels.ToArray(), ingestedAtUtc = ingestedAtUtc.ToString("o"), chunkIndex }, ct);
 
     /// <summary>Write the whole batch as a single <c>PUT .../points</c> call (one round-trip)
     /// instead of the default per-chunk loop.</summary>
@@ -124,7 +124,7 @@ public sealed class QdrantVectorStore : IVectorStore
             payload = new
             {
                 source = c.Source, text = c.Text, domain = c.Domain,
-                labels = c.Labels.ToArray(), ingestedAtUtc = c.IngestedAtUtc.ToString("o"),
+                labels = c.Labels.ToArray(), ingestedAtUtc = c.IngestedAtUtc.ToString("o"), chunkIndex = c.ChunkIndex,
             },
         });
         return UpsertManyAsync(_chunks, points, ct);
@@ -187,7 +187,7 @@ public sealed class QdrantVectorStore : IVectorStore
                     : new List<string>();
                 outList.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
                     pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                    labels, ParseIngestedAt(pay), IdOf(p)));
+                    labels, ParseIngestedAt(pay), IdOf(p), ChunkIndexOf(pay)));
             }
             cursor = result.TryGetProperty("next_page_offset", out var npo) && npo.ValueKind != JsonValueKind.Null
                 ? (npo.ValueKind == JsonValueKind.String ? npo.GetString() : npo.GetRawText())
@@ -200,6 +200,10 @@ public sealed class QdrantVectorStore : IVectorStore
         => pay.TryGetProperty("ingestedAtUtc", out var t) && t.ValueKind == JsonValueKind.String
             && DateTime.TryParse(t.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
             ? dt : default;
+
+    /// <summary>-1 (unknown) for points written before <c>chunkIndex</c> existed in the payload.</summary>
+    private static int ChunkIndexOf(JsonElement pay)
+        => pay.TryGetProperty("chunkIndex", out var ci) && ci.ValueKind == JsonValueKind.Number ? ci.GetInt32() : -1;
 
     /// <summary>A point's own id, as Qdrant echoes it back — string (UUID) or number, both
     /// stringified so callers get a uniform opaque identifier.</summary>
@@ -311,7 +315,7 @@ public sealed class QdrantVectorStore : IVectorStore
                 : new List<string>();
             items.Add(new StoredChunk(Str(pay, "source"), Str(pay, "text"),
                 pay.TryGetProperty("domain", out var dm) && dm.ValueKind == JsonValueKind.String ? dm.GetString() : null,
-                labels, ParseIngestedAt(pay), IdOf(p)));
+                labels, ParseIngestedAt(pay), IdOf(p), ChunkIndexOf(pay)));
         }
 
         string? next = result.TryGetProperty("next_page_offset", out var npo) && npo.ValueKind != JsonValueKind.Null

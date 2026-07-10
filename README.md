@@ -97,10 +97,35 @@ historial = new[] { new ChatMessage("user", "¿qué sección de cable para 25 A?
 var t2 = await rag.AskAsync("¿y para 40 A?", historial, domain: "construccion");   // sigue el hilo
 ```
 El modo **agéntico** expone **herramientas internas** sobre la base
-(`search_knowledge_base`, `list_domains`, `list_labels`, `create_domain`,
-`create_label`, `ingest_document`, `create_profile`, `create_guardrail`) vía
-function-calling, y **también pasa por el enrutado y los guardarails** (entrada antes
-del bucle de tools, salida sobre la respuesta final).
+(`search_knowledge_base`, `list_domains`, `list_labels`, `find_domains`, `find_labels`,
+`get_document_chunks`, `get_adjacent_chunk`, `create_domain`, `create_label`,
+`ingest_document`, `create_profile`, `create_guardrail`) vía function-calling, y **también
+pasa por el enrutado y los guardarails** (entrada antes del bucle de tools, salida sobre la
+respuesta final).
+
+`get_document_chunks`/`get_adjacent_chunk` dejan que el modelo pida el resto de un
+documento cuando una cita se corta a media frase: cada chunk lleva un `ChunkIndex`
+(su posición 0-based dentro del `source`, asignado en la ingesta) que permite pedir
+"todos los chunks de este documento" o "el siguiente/anterior a este". No añaden ningún
+método nuevo a `IVectorStore` — ambas pagínan `ListChunksAsync` (ya público) y resuelven
+en memoria, porque el orden de paginación es específico de cada backend y no se puede
+asumir correlacionado con `ChunkIndex`.
+
+`find_domains`/`find_labels` rankean los dominios/etiquetas ya definidos por similitud
+semántica de su `Description` frente a una consulta (mismo embedder que ingesta/búsqueda),
+para que el modelo pueda descubrir cuáles pasarle luego a `search_knowledge_base` o
+`ingest_document` cuando hay demasiados como para razonarlo leyendo `list_domains`/
+`list_labels` a pelo. Calculan el embedding de cada descripción en cada llamada — simple
+y correcto, a costa de latencia proporcional al tamaño del catálogo; si eso pesa, cachear
+esos vectores e invalidar en `Define*Async`/`Remove*Async` es la mejora natural (no incluida
+en esta primera versión).
+
+`search_knowledge_base` queda **fijo al dominio enrutado del turno** — un `domain` que el
+modelo intente colar en sus propios argumentos se ignora, salvo que actives
+`AgentToolScope.CrossDomainSearch`: entonces el tool acepta un `domain` explícito por
+llamada (para saltar a otro dominio si el enrutado no era el correcto) y, si lo omite,
+busca en **todos** los dominios sin filtrar. Es el único flag que no añade un tool nuevo:
+cambia el *schema* y el comportamiento de `search_knowledge_base` en sí.
 
 ## MCP (paquete `RagKit.Mcp`)
 Conecta servidores **MCP** externos por stdio y registra sus herramientas en el
@@ -329,6 +354,11 @@ progreso** (vía Server-Sent Events) y un **playground de preguntas**
   CRUD completo, ingesta con seguimiento de progreso (SSE) y playground de
   preguntas (`AskAsync`/`AskStreamAsync`, SSE); empaquetado (assets embebidos
   verificados) y suite de tests propia cerrados.
+- ✅ **Herramientas agénticas ampliadas**: `find_domains`/`find_labels` (descubrimiento
+  semántico de dominios/etiquetas), `get_document_chunks`/`get_adjacent_chunk`
+  (navegación por `ChunkIndex`, sin tocar `IVectorStore`) y `AgentToolScope.CrossDomainSearch`
+  (le da a `search_knowledge_base` un `domain` explícito por llamada, en vez de quedar
+  fijo al dominio enrutado del turno) — persistido en los 4 backends.
 
 **Recuperación híbrida + reranking:** por defecto fusiona **vector denso + BM25
 léxico** con **RRF** (`Hybrid=true`), para encontrar tanto sinónimos como términos

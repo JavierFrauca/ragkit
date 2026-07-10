@@ -21,16 +21,21 @@ public sealed record StoredHit(string Source, string Text, string? Domain, IRead
 /// <summary>A stored chunk (no score) — used to rebuild the lexical index for hybrid search,
 /// to aggregate the document inventory (<see cref="IVectorStore.ListDocumentsAsync"/>), and
 /// as the page item of <see cref="IVectorStore.ListChunksAsync"/> (where <see cref="Id"/> is
-/// what a caller would use to reference this exact chunk later).</summary>
-public sealed record StoredChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, DateTime IngestedAtUtc = default, string Id = "");
+/// what a caller would use to reference this exact chunk later). <see cref="ChunkIndex"/> is
+/// its 0-based position within <see cref="Source"/> at ingestion time (-1 when a backend
+/// predates it, or for a chunk written before this field existed) — trailing default so
+/// existing call sites keep compiling.</summary>
+public sealed record StoredChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, DateTime IngestedAtUtc = default, string Id = "", int ChunkIndex = -1);
 
 /// <summary>One page of <see cref="IVectorStore.ListChunksAsync"/>: the chunks plus an
 /// opaque cursor to fetch the next page, or null when there isn't one. The cursor's
 /// shape is backend-specific (an offset, a point id…) — callers must not parse it.</summary>
 public sealed record ChunkPage(IReadOnlyList<StoredChunk> Items, string? NextCursor);
 
-/// <summary>A chunk plus its vector, ready to be indexed — the unit of batch ingestion.</summary>
-public sealed record EmbeddedChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, float[] Vector, DateTime IngestedAtUtc = default);
+/// <summary>A chunk plus its vector, ready to be indexed — the unit of batch ingestion.
+/// <see cref="ChunkIndex"/> is its 0-based position within <see cref="Source"/> (the order
+/// the chunker produced it in) — trailing default so existing call sites keep compiling.</summary>
+public sealed record EmbeddedChunk(string Source, string Text, string? Domain, IReadOnlyList<string> Labels, float[] Vector, DateTime IngestedAtUtc = default, int ChunkIndex = -1);
 
 /// <summary>
 /// The storage contract: identical across backends so a consumer swaps SQL
@@ -71,9 +76,10 @@ public interface IVectorStore
     /// <summary>Persist the full set of guardrail rules (replaces the stored set). Default: no-op.</summary>
     Task SaveGuardrailsAsync(IReadOnlyList<GuardrailRule> guardrails, CancellationToken ct = default) => Task.CompletedTask;
 
-    /// <summary>Index one chunk (its vector + provenance and when it was ingested).</summary>
+    /// <summary>Index one chunk (its vector + provenance, when it was ingested, and its
+    /// 0-based <paramref name="chunkIndex"/> within <paramref name="source"/>).</summary>
     Task AddChunkAsync(string source, string text, string? domain, IReadOnlyList<string> labels, float[] vector,
-        DateTime ingestedAtUtc = default, CancellationToken ct = default);
+        DateTime ingestedAtUtc = default, int chunkIndex = -1, CancellationToken ct = default);
 
     /// <summary>
     /// Index many chunks at once. The default loops over <see cref="AddChunkAsync"/>;
@@ -88,7 +94,7 @@ public interface IVectorStore
     async Task AddChunksAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default)
     {
         foreach (var c in chunks)
-            await AddChunkAsync(c.Source, c.Text, c.Domain, c.Labels, c.Vector, c.IngestedAtUtc, ct).ConfigureAwait(false);
+            await AddChunkAsync(c.Source, c.Text, c.Domain, c.Labels, c.Vector, c.IngestedAtUtc, c.ChunkIndex, ct).ConfigureAwait(false);
     }
 
     /// <summary>Top-k by cosine similarity, optionally scoped to a domain and required labels.</summary>
