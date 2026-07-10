@@ -10,10 +10,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Core + extractor de PDF/DOCX (página de ingesta) + el panel de
+    <!-- Core + extractor de PDF/DOCX (página de ingesta) + normalizador a Markdown
+         (HTML/CSV/DOCX/PDF con títulos y tablas, ver Program.cs) + el panel de
          administración (montado en /rag-admin, ver Program.cs). -->
     <ProjectReference Include="..\..\src\RagKit\RagKit.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Extractors\RagKit.Extractors.csproj" />
+    <ProjectReference Include="..\..\src\RagKit.Markdown\RagKit.Markdown.csproj" />
     <ProjectReference Include="..\..\src\RagKit.Dashboard\RagKit.Dashboard.csproj" />
   </ItemGroup>
 

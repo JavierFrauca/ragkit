@@ -10,6 +10,12 @@ builder.Services.AddRazorComponents()
 
 // Habilita los extractores de documentos (PDF/DOCX) para la página de ingesta.
 RagKit.Extractors.DocumentExtractors.Enable();
+// RagKit.Markdown normaliza también HTML/CSV a Markdown, y sustituye la extracción
+// de PDF/DOCX de arriba por una que conserva títulos y tablas — llamar SIEMPRE
+// después de DocumentExtractors.Enable() (el último registro por extensión gana).
+RagKit.Markdown.MarkdownNormalizers.Enable();
+// Si prefieres texto plano de PDF (sin "## " ni tablas), actívalo antes de ingerir:
+//   RagKit.Markdown.PdfToMarkdown.FormatAsMarkdown = false;
 
 var settings = builder.Configuration.GetSection("Rag").Get<RagSettings>() ?? new RagSettings();
 var options = new RagOptions

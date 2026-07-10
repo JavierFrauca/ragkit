@@ -20,6 +20,8 @@ namespace RagKit.Markdown;
 /// Single-column reading order only — a genuinely multi-column page layout (e.g. a
 /// two-column article) isn't reconstructed; acceptable given the explicit 80% target
 /// and that the documents this targets (invoices, payroll, tax forms) are single-column.
+/// Set <see cref="FormatAsMarkdown"/> to <c>false</c> to skip heading/table detection
+/// entirely and get the same extracted words back as plain flowing text.
 /// </summary>
 public static class PdfToMarkdown
 {
@@ -29,6 +31,14 @@ public static class PdfToMarkdown
     // a genuine column separator is many times that. 2.5x comfortably separates the two
     // without depending on how many words share the row (see SplitIntoCells remarks).
     private const double ColumnGapFontSizeMultiplier = 2.5;
+
+    /// <summary>
+    /// When <c>true</c> (default), rows are classified as headings (<c>## </c>) or
+    /// tables (<c>| | |</c>). When <c>false</c>, that classification is skipped entirely
+    /// and every row is emitted as plain text — same word extraction/row grouping, no
+    /// Markdown syntax. Applies to both <see cref="Convert"/> and <see cref="ConvertAsync"/>.
+    /// </summary>
+    public static bool FormatAsMarkdown { get; set; } = true;
 
     public static string Convert(string path) => ConvertCore(path, CancellationToken.None);
 
@@ -85,7 +95,7 @@ public static class PdfToMarkdown
         foreach (var row in rows)
         {
             double rowFontSize = AverageFontSize(row);
-            if (SplitIntoCells(row, rowFontSize * ColumnGapFontSizeMultiplier).Count >= 2)
+            if (FormatAsMarkdown && SplitIntoCells(row, rowFontSize * ColumnGapFontSizeMultiplier).Count >= 2)
             {
                 FlushParagraph();
                 tableRun.Add(row);
@@ -94,7 +104,7 @@ public static class PdfToMarkdown
             FlushTableRun(sb, tableRun);
 
             var text = string.Join(' ', row.Select(w => w.Text));
-            if (text.Length > 0 && text.Length <= HeadingMaxChars && rowFontSize >= headingThreshold)
+            if (FormatAsMarkdown && text.Length > 0 && text.Length <= HeadingMaxChars && rowFontSize >= headingThreshold)
             {
                 FlushParagraph();
                 sb.Append("## ").AppendLine(text);

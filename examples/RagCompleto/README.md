@@ -22,6 +22,11 @@ real de varias páginas. Para el arranque mínimo, mira
   porque hoy no hay una sesión agéntica).
 - **Página de ingesta separada** (`/ingesta`): texto o fichero (PDF/DOCX/TXT),
   dominio explícito o auto-clasificado.
+- **`RagKit.Markdown` habilitado** (`MarkdownNormalizers.Enable()`, tras
+  `DocumentExtractors.Enable()`): PDF/DOCX se normalizan a Markdown conservando
+  títulos y tablas (y de paso se soportan HTML/CSV). Si prefieres el texto
+  plano de PDF que usa solo `RagKit.Extractors`, pon
+  `PdfToMarkdown.FormatAsMarkdown = false` antes de ingerir (ver `Program.cs`).
 - **`RagKit.Dashboard` montado en `/rag-admin`**: gestión de dominios,
   etiquetas, documentos, chunks, perfiles, guardarails, prompts, ingesta con
   progreso y un playground — sin reimplementar nada de eso en esta app. Así

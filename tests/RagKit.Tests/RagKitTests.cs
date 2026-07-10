@@ -2078,6 +2078,84 @@ public class RagKitTests
         Assert.Same(task, winner); // "PdfToMarkdown no debe tardar más de unos segundos, ni siquiera con coordenadas degeneradas."
     }
 
+    [Fact]
+    public void PdfToMarkdown_FormatAsMarkdown_defaults_to_true()
+    {
+        Assert.True(PdfToMarkdown.FormatAsMarkdown);
+    }
+
+    [Fact]
+    public void PdfToMarkdown_with_FormatAsMarkdown_false_produces_plain_text_without_heading_syntax()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "d.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        pg.AddText("contrato laboral indefinido", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        PdfToMarkdown.FormatAsMarkdown = false;
+        try
+        {
+            var text = PdfToMarkdown.Convert(pdfPath);
+            Assert.Contains("contrato", text);
+            Assert.DoesNotContain("## ", text);
+        }
+        finally
+        {
+            PdfToMarkdown.FormatAsMarkdown = true;
+        }
+    }
+
+    [Fact]
+    public void PdfToMarkdown_with_FormatAsMarkdown_false_produces_plain_text_without_table_syntax()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        var pdfPath = Path.Combine(tmp, "invoice.pdf");
+        var b = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = b.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
+        double y = 780;
+        pg.AddText("Factura de servicios profesionales", 16, new UglyToad.PdfPig.Core.PdfPoint(40, y), font);
+        y -= 30;
+        (string a, string bCol, string c)[] rows =
+        {
+            ("Concepto", "Cantidad", "Importe"),
+            ("Consultoria fiscal", "10 h", "450,00 EUR"),
+            ("Presentacion IVA", "1", "80,00 EUR"),
+            ("Total", "", "1710,00 EUR"),
+        };
+        foreach (var (a, bCol, c) in rows)
+        {
+            pg.AddText(a, 10, new UglyToad.PdfPig.Core.PdfPoint(40, y), font);
+            pg.AddText(bCol, 10, new UglyToad.PdfPig.Core.PdfPoint(260, y), font);
+            pg.AddText(c, 10, new UglyToad.PdfPig.Core.PdfPoint(380, y), font);
+            y -= 15;
+        }
+        File.WriteAllBytes(pdfPath, b.Build());
+
+        PdfToMarkdown.FormatAsMarkdown = false;
+        try
+        {
+            var text = PdfToMarkdown.Convert(pdfPath);
+            // El contenido se conserva (las celdas siguen ahí)...
+            Assert.Contains("Factura de servicios profesionales", text);
+            Assert.Contains("Consultoria fiscal", text);
+            Assert.Contains("450,00 EUR", text);
+            // ...pero sin ninguna sintaxis Markdown de título o tabla.
+            Assert.DoesNotContain("## ", text);
+            Assert.DoesNotContain("---", text);
+            Assert.DoesNotContain("|", text);
+        }
+        finally
+        {
+            PdfToMarkdown.FormatAsMarkdown = true;
+        }
+    }
+
     // --- Fase 2: MarkdownChunker estructural + tamaño variable por embedder -----------
 
     [Fact]
