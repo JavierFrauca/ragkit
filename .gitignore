@@ -11,3 +11,6 @@ artifacts/
 
 # Example run logs
 examples/**/.run.*
+
+# Local Claude Code config (personal rules/settings, not part of the project)
+.claude/
