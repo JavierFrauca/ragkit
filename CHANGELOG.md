@@ -4,6 +4,34 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.4.0] - 2026-07-11
+
+### Añadido
+- **`AgentToolScope.CrossDomainSearch`**: la tool `search_knowledge_base` acepta ahora
+  un `domain` explícito por llamada (o busca en todos si se omite). Sin el flag activo,
+  cualquier `domain` que el modelo intente colar en la llamada se ignora y la búsqueda
+  sigue fijada al dominio enrutado del turno, igual que antes.
+- **`find_domains` / `find_labels`**: nuevas tools que rankean dominios/etiquetas por
+  similitud semántica de su `Description` (coseno vía el embedder ya configurado), para
+  descubrir el dominio o la etiqueta relevante por significado en vez de por nombre exacto.
+- **`get_document_chunks` / `get_adjacent_chunk`**: nuevas tools de navegación que
+  paginan un documento completo o resuelven el chunk anterior/siguiente a uno dado.
+  `ChunkIndex` (posición 0-based dentro del documento) se persiste ahora en los 4
+  backends (InMemory, Qdrant, Postgres, SQL Server); `get_adjacent_chunk` no asume que
+  la paginación de cada backend está correlacionada con `ChunkIndex` — pagína el
+  documento completo y resuelve por índice en memoria en vez de fiarse del orden nativo.
+- **`PdfToMarkdown.FormatAsMarkdown`**: nuevo flag estático (`true` por defecto) que
+  permite obtener el texto plano extraído por PdfPig sin clasificación de títulos
+  (`## `) ni tablas (`| | |`), para quien prefiera ingestar PDFs sin normalizar a
+  Markdown.
+
+### Tests
+- 13 tests nuevos/actualizados para las tools agénticas (cross-domain search,
+  descubrimiento semántico, navegación de chunks) y 3 para `FormatAsMarkdown`.
+- Suite completa: 136 tests (net8.0) + 136 (net10.0) + 22 (Dashboard.Tests), todos OK.
+- Tools de navegación validadas además en real contra Postgres+pgvector, SQL Server 2025
+  y Qdrant (Docker), no solo InMemory.
+
 ## [1.3.2] - 2026-07-08
 
 ### Corregido
