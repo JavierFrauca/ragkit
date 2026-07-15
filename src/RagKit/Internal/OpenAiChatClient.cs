@@ -16,8 +16,9 @@ internal sealed class OpenAiChatClient : IChatClient
 {
     private readonly HttpClient _http;
     private readonly string _model;
+    private readonly bool _supportsTools;
 
-    public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null, int timeoutSeconds = 300)
+    public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null, int timeoutSeconds = 300, bool supportsTools = true)
     {
         if (http is null) { _http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) }; }
         else _http = http;
@@ -25,6 +26,7 @@ internal sealed class OpenAiChatClient : IChatClient
         if (!string.IsNullOrEmpty(apiKey))
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         _model = model;
+        _supportsTools = supportsTools;
     }
 
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
@@ -97,10 +99,7 @@ internal sealed class OpenAiChatClient : IChatClient
         }
     }
 
-    // RagKit assumes an OpenAI-compatible endpoint, which speaks tool-calling. If
-    // the chosen model doesn't, the agent loop catches the failure / the caller
-    // can use one-shot instead.
-    public bool SupportsTools => true;
+    public bool SupportsTools => _supportsTools;
 
     public async Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
     {

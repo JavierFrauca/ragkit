@@ -15,6 +15,15 @@ public sealed class LlmConfig
     public int TimeoutSeconds { get; set; } = 300;
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Url) && !string.IsNullOrWhiteSpace(Model);
+
+    /// <summary>
+    /// Whether this model supports the OpenAI JSON function-calling protocol
+    /// (<c>tool_choice: auto</c>). Default null → true (OpenAI-compatible assumption).
+    /// Set to false for models that ignore the <c>tools</c> parameter and write tool
+    /// calls as XML in the content stream instead — the agent loop then falls back to
+    /// one-shot RAG (pre-retrieves documents and injects them as context, no tool calls).
+    /// </summary>
+    public bool? SupportsTools { get; set; }
 }
 
 /// <summary>
