@@ -121,7 +121,7 @@ public sealed class RagClient
             throw new RagKitException($"El LLM '{which}' no está configurado (faltan Url/Model).");
         return new OpenAiChatClient(cfg.Url, cfg.ApiKey, cfg.Model, timeoutSeconds: cfg.TimeoutSeconds,
             supportsTools: cfg.SupportsTools ?? true,
-            parseXmlToolCalls: cfg.ParseXmlToolCalls ?? false);
+            parseXmlToolCalls: cfg.ParseXmlToolCalls); // null = auto-detect by model name
     }
 
     // --- structure -----------------------------------------------------------

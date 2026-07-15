@@ -14,13 +14,22 @@ namespace RagKit.Internal;
 /// </summary>
 internal sealed class OpenAiChatClient : IChatClient
 {
+    // Models known to write tool calls as XML in the content stream rather than via the
+    // OpenAI JSON function-calling protocol. ParseXmlToolCalls=null → auto-enable for these.
+    private static readonly HashSet<string> _xmlToolCallModels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "deepseek-v4-pro",
+        "deepseek-r1",
+        "deepseek-reasoner",
+    };
+
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly bool _supportsTools;
     private readonly bool _parseXmlToolCalls;
 
     public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null,
-        int timeoutSeconds = 300, bool supportsTools = true, bool parseXmlToolCalls = false)
+        int timeoutSeconds = 300, bool supportsTools = true, bool? parseXmlToolCalls = null)
     {
         if (http is null) { _http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) }; }
         else _http = http;
@@ -29,7 +38,7 @@ internal sealed class OpenAiChatClient : IChatClient
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         _model = model;
         _supportsTools = supportsTools;
-        _parseXmlToolCalls = parseXmlToolCalls;
+        _parseXmlToolCalls = parseXmlToolCalls ?? _xmlToolCallModels.Contains(model);
     }
 
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
