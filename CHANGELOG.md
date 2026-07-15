@@ -4,6 +4,20 @@ Todas las novedades relevantes de RagKit. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [SemVer](https://semver.org/lang/es/).
 
+## [1.5.0] - 2026-07-15
+
+### Añadido
+- **`LlmConfig.SupportsTools`** (`bool?`): permite declarar explícitamente si el modelo
+  del endpoint soporta el protocolo JSON function-calling de OpenAI (`tool_choice: auto`).
+  `null` (por defecto) mantiene el comportamiento anterior (se asume `true`). Ponlo a
+  `false` para modelos que ignoran el parámetro `tools` y escriben tool calls como XML
+  en el content stream (p. ej. `deepseek-v4-pro`): el loop agéntico cae entonces
+  automáticamente al path de one-shot RAG — recupera documentos de forma previa e
+  inyecta el contexto en el mensaje de usuario, sin necesitar function-calling.
+
+### Tests
+- Suite completa sin cambios: 294 tests, todos OK.
+
 ## [1.4.0] - 2026-07-11
 
 ### Añadido
