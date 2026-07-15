@@ -17,8 +17,10 @@ internal sealed class OpenAiChatClient : IChatClient
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly bool _supportsTools;
+    private readonly bool _parseXmlToolCalls;
 
-    public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null, int timeoutSeconds = 300, bool supportsTools = true)
+    public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null,
+        int timeoutSeconds = 300, bool supportsTools = true, bool parseXmlToolCalls = false)
     {
         if (http is null) { _http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) }; }
         else _http = http;
@@ -27,6 +29,7 @@ internal sealed class OpenAiChatClient : IChatClient
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         _model = model;
         _supportsTools = supportsTools;
+        _parseXmlToolCalls = parseXmlToolCalls;
     }
 
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
@@ -243,6 +246,9 @@ internal sealed class OpenAiChatClient : IChatClient
         var callNames = new Dictionary<int, string>();
         var callArgs = new Dictionary<int, StringBuilder>();
         var startedIndexes = new HashSet<int>();
+        // When ParseXmlToolCalls: accumulate content instead of streaming it, then
+        // parse XML tool calls from the accumulated text at stream end.
+        var accumContent = _parseXmlToolCalls ? new StringBuilder() : null;
 
         await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
@@ -293,11 +299,39 @@ internal sealed class OpenAiChatClient : IChatClient
             catch (JsonException) { continue; }
 
             if (!string.IsNullOrEmpty(contentPiece))
-                yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: contentPiece);
+            {
+                if (accumContent is not null)
+                    accumContent.Append(contentPiece); // ParseXmlToolCalls: buffer for post-stream parsing
+                else
+                    yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: contentPiece);
+            }
             foreach (var name in newlyStarted)
                 yield return new AgentDelta(AgentDeltaKind.ToolCallStarted, ToolName: name);
         }
 
+        // ── ParseXmlToolCalls: detect and emit XML-format tool calls ──────────────
+        if (accumContent is not null)
+        {
+            var (cleanText, xmlCalls) = ExtractXmlToolCalls(accumContent.ToString());
+            if (!string.IsNullOrWhiteSpace(cleanText))
+                yield return new AgentDelta(AgentDeltaKind.ContentPiece, Content: cleanText);
+
+            // Prefer JSON tool calls from delta.tool_calls; fall back to XML-parsed ones.
+            bool hasJsonCalls = callIds.Count > 0 || callNames.Count > 0 || callArgs.Count > 0;
+            if (!hasJsonCalls && xmlCalls.Count > 0)
+            {
+                foreach (var (n, _) in xmlCalls)
+                    yield return new AgentDelta(AgentDeltaKind.ToolCallStarted, ToolName: n);
+                var xmlFinal = xmlCalls
+                    .Select((tc, i) => new ToolCall($"xml-{i}", tc.Name, tc.ArgsJson))
+                    .ToList();
+                yield return new AgentDelta(AgentDeltaKind.ToolCallsReady, ToolCalls: xmlFinal);
+                yield break; // XML tool calls handled; skip the JSON emission below
+            }
+            // No XML tool calls found (final answer turn) — fall through to JSON check.
+        }
+
+        // ── Standard JSON tool calls ──────────────────────────────────────────────
         if (callIds.Count > 0 || callNames.Count > 0 || callArgs.Count > 0)
         {
             var indexes = callIds.Keys.Union(callNames.Keys).Union(callArgs.Keys).OrderBy(i => i);
@@ -307,6 +341,99 @@ internal sealed class OpenAiChatClient : IChatClient
                 callArgs.TryGetValue(i, out var sb) ? sb.ToString() : "{}")).ToList();
             yield return new AgentDelta(AgentDeltaKind.ToolCallsReady, ToolCalls: final);
         }
+    }
+
+    /// <summary>
+    /// Parses content written by a model that uses XML for tool calls (e.g. deepseek-v4-pro).
+    /// Strips <c>&lt;thinking&gt;</c> / <c>&lt;think&gt;</c> and <c>&lt;tool_calls&gt;</c>
+    /// wrappers; extracts individual <c>&lt;tag_with_underscore&gt;</c> blocks as tool calls;
+    /// returns everything else as clean visible content.
+    /// </summary>
+    internal static (string CleanContent, List<(string Name, string ArgsJson)> ToolCalls)
+        ExtractXmlToolCalls(string raw)
+    {
+        var result = new List<(string, string)>();
+        var clean = new StringBuilder();
+        int pos = 0;
+
+        while (pos < raw.Length)
+        {
+            int lt = raw.IndexOf('<', pos);
+            if (lt < 0) { clean.Append(raw[pos..]); break; }
+            clean.Append(raw[pos..lt]); // text before '<'
+
+            if (TrySkipBlock(raw, lt, "<thinking>", "</thinking>", out int after) ||
+                TrySkipBlock(raw, lt, "<think>", "</think>", out after))
+            { pos = after; continue; }
+
+            if (TrySkipBlock(raw, lt, "<tool_calls>", "</tool_calls>", out after))
+            {
+                var inner = raw[(lt + "<tool_calls>".Length)..
+                    Math.Max(lt + "<tool_calls>".Length, after - "</tool_calls>".Length)];
+                ExtractInnerTools(inner, result);
+                pos = after; continue;
+            }
+
+            if (TryReadUnderscoreTag(raw, lt, out var tagName, out var tagContent, out after))
+            {
+                result.Add((tagName, CoerceToArgsJson(tagContent)));
+                pos = after; continue;
+            }
+
+            clean.Append('<'); // regular '<', emit literally
+            pos = lt + 1;
+        }
+
+        return (clean.ToString().Trim(), result);
+    }
+
+    private static bool TrySkipBlock(string s, int start, string open, string close, out int after)
+    {
+        if (!s.AsSpan(start).StartsWith(open.AsSpan(), StringComparison.Ordinal)) { after = 0; return false; }
+        int end = s.IndexOf(close, start + open.Length, StringComparison.Ordinal);
+        after = end >= 0 ? end + close.Length : s.Length;
+        return true;
+    }
+
+    private static bool TryReadUnderscoreTag(string s, int lt,
+        out string tagName, out string content, out int after)
+    {
+        tagName = ""; content = ""; after = 0;
+        int k = lt + 1;
+        if (k >= s.Length || !char.IsAsciiLetterLower(s[k])) return false;
+        bool hasUnderscore = false;
+        while (k < s.Length && (char.IsAsciiLetterLower(s[k]) || char.IsAsciiDigit(s[k]) || s[k] == '_'))
+        { if (s[k] == '_') hasUnderscore = true; k++; }
+        if (!hasUnderscore || k >= s.Length || s[k] != '>') return false;
+        var name = s[(lt + 1)..k];
+        var closeTag = "</" + name + ">";
+        int closeAt = s.IndexOf(closeTag, k + 1, StringComparison.Ordinal);
+        if (closeAt < 0) return false;
+        tagName = name; content = s[(k + 1)..closeAt].Trim(); after = closeAt + closeTag.Length;
+        return true;
+    }
+
+    private static void ExtractInnerTools(string inner, List<(string, string)> result)
+    {
+        int pos = 0;
+        while (pos < inner.Length)
+        {
+            int lt = inner.IndexOf('<', pos);
+            if (lt < 0) break;
+            if (TryReadUnderscoreTag(inner, lt, out var n, out var c, out int after))
+            { result.Add((n, CoerceToArgsJson(c))); pos = after; }
+            else pos = lt + 1;
+        }
+    }
+
+    private static string CoerceToArgsJson(string content)
+    {
+        var trimmed = content.Trim();
+        if ((trimmed.StartsWith('{') && trimmed.EndsWith('}')) ||
+            (trimmed.StartsWith('[') && trimmed.EndsWith(']')))
+            return trimmed; // already JSON
+        // Plain text: wrap as "query" (covers search_knowledge_base, the primary tool)
+        return JsonSerializer.Serialize(new { query = trimmed });
     }
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";

@@ -24,6 +24,17 @@ public sealed class LlmConfig
     /// one-shot RAG (pre-retrieves documents and injects them as context, no tool calls).
     /// </summary>
     public bool? SupportsTools { get; set; }
+
+    /// <summary>
+    /// When true, <see cref="IChatClient.NextStreamAsync"/> detects tool calls written
+    /// by the model as XML in the content stream (e.g. <c>&lt;search_knowledge_base&gt;
+    /// {"query":"…"}&lt;/search_knowledge_base&gt;</c>) and translates them into
+    /// <see cref="AgentDelta"/> events as if they were standard OpenAI
+    /// <c>delta.tool_calls</c>. Designed for reasoning models (e.g. deepseek-v4-pro)
+    /// that write XML tool calls in the content stream instead of using the JSON
+    /// function-calling protocol. Default null → false.
+    /// </summary>
+    public bool? ParseXmlToolCalls { get; set; }
 }
 
 /// <summary>
