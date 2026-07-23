@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -12,8 +14,9 @@ namespace RagKit.Internal;
 internal sealed class Classifier
 {
     private readonly IChatClient _llm;
+    private readonly ILogger _log;
 
-    public Classifier(IChatClient llm) => _llm = llm;
+    public Classifier(IChatClient llm, ILogger? logger = null) { _llm = llm; _log = logger ?? NullLogger.Instance; }
 
     public async Task<(string? Domain, List<string> Labels, double Confidence)> ClassifyAsync(
         string excerpt,

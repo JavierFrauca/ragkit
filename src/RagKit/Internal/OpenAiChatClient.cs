@@ -1,9 +1,12 @@
-﻿using System.Net.Http;
+using System.Diagnostics;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -23,13 +26,16 @@ internal sealed class OpenAiChatClient : IChatClient
         "deepseek-reasoner",
     };
 
+    private static readonly ActivitySource ActivitySource = new("RagKit");
+
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly bool _supportsTools;
     private readonly bool _parseXmlToolCalls;
+    private readonly ILogger _log;
 
     public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null,
-        int timeoutSeconds = 300, bool supportsTools = true, bool? parseXmlToolCalls = null)
+        int timeoutSeconds = 300, bool supportsTools = true, bool? parseXmlToolCalls = null, ILogger? logger = null)
     {
         if (http is null) { _http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) }; }
         else _http = http;
@@ -39,28 +45,40 @@ internal sealed class OpenAiChatClient : IChatClient
         _model = model;
         _supportsTools = supportsTools;
         _parseXmlToolCalls = parseXmlToolCalls ?? _xmlToolCallModels.Contains(model);
+        _log = logger ?? NullLogger.Instance;
     }
 
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
     {
+        using var activity = ActivitySource.StartActivity("chat.complete");
+        activity?.SetTag("rag.model", _model);
+        activity?.SetTag("rag.msg_count", messages.Count);
+
         var payload = new
         {
             model = _model,
             messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
         };
         var json = JsonSerializer.Serialize(payload);
+        _log.LogDebug("LLM request: model={Model} msgs={MsgCount} chars={Len}", _model, messages.Count, json.Length);
         using var resp = await HttpRetry.PostAsync(_http, "chat/completions",
             () => new StringContent(json, Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        activity?.SetTag("rag.status_code", (int)resp.StatusCode);
         if (!resp.IsSuccessStatusCode)
+        {
+            _log.LogError("LLM error: {StatusCode}", (int)resp.StatusCode);
             throw new RagKitException($"El LLM respondió {(int)resp.StatusCode}: {Truncate(body, 300)}");
+        }
 
         using var doc = JsonDocument.Parse(body);
-        return doc.RootElement
+        var content = doc.RootElement
             .GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString() ?? "";
+        _log.LogDebug("LLM response: chars={Len}", content.Length);
+        return content;
     }
 
     /// <summary>Stream the answer by reading the server's <c>text/event-stream</c>
@@ -69,6 +87,10 @@ internal sealed class OpenAiChatClient : IChatClient
     /// the whole call.</summary>
     public async IAsyncEnumerable<string> StreamAsync(IReadOnlyList<ChatMessage> messages, [EnumeratorCancellation] CancellationToken ct = default)
     {
+        using var activity = ActivitySource.StartActivity("chat.stream");
+        activity?.SetTag("rag.model", _model);
+        activity?.SetTag("rag.msg_count", messages.Count);
+
         var payload = new
         {
             model = _model,
@@ -79,10 +101,13 @@ internal sealed class OpenAiChatClient : IChatClient
         {
             Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
         };
+        _log.LogDebug("LLM stream request: model={Model} msgs={MsgCount}", _model, messages.Count);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        activity?.SetTag("rag.status_code", (int)resp.StatusCode);
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            _log.LogError("LLM stream error: {StatusCode}", (int)resp.StatusCode);
             throw new RagKitException($"El LLM respondió {(int)resp.StatusCode}: {Truncate(err, 300)}");
         }
 
@@ -115,6 +140,10 @@ internal sealed class OpenAiChatClient : IChatClient
 
     public async Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
     {
+        using var activity = ActivitySource.StartActivity("chat.next");
+        activity?.SetTag("rag.model", _model);
+        activity?.SetTag("rag.tool_count", tools.Count);
+
         // NOTE: the request/response JSON here follows the OpenAI tool-calling
         // spec; it is exercised by the agent-loop tests via a fake client, but the
         // wire format against a live endpoint should be validated end-to-end.
@@ -161,11 +190,16 @@ internal sealed class OpenAiChatClient : IChatClient
         };
 
         var json = root.ToJsonString();
+        _log.LogDebug("LLM agent request: model={Model} msgs={MsgCount} tools={ToolCount} chars={Len}", _model, messages.Count, tools.Count, json.Length);
         using var resp = await HttpRetry.PostAsync(_http, "chat/completions",
             () => new StringContent(json, Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        activity?.SetTag("rag.status_code", (int)resp.StatusCode);
         if (!resp.IsSuccessStatusCode)
+        {
+            _log.LogError("LLM agent error: {StatusCode}", (int)resp.StatusCode);
             throw new RagKitException($"El LLM respondió {(int)resp.StatusCode}: {Truncate(body, 300)}");
+        }
 
         using var doc = JsonDocument.Parse(body);
         var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
@@ -183,6 +217,7 @@ internal sealed class OpenAiChatClient : IChatClient
                     fn.TryGetProperty("arguments", out var ar) ? ar.GetString() ?? "{}" : "{}"));
             }
         }
+        _log.LogDebug("LLM agent response: textChars={TextLen} toolCalls={ToolCount}", text?.Length ?? 0, toolCalls.Count);
         return new AgentTurn(text, toolCalls);
     }
 
@@ -445,7 +480,7 @@ internal sealed class OpenAiChatClient : IChatClient
         return JsonSerializer.Serialize(new { query = trimmed });
     }
 
-    private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
+    private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "\u2026";
 }
 
 /// <summary>Friendly error surfaced to the consumer (no stack-trace spelunking).</summary>

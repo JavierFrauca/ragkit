@@ -1,4 +1,6 @@
-﻿using System.Text;
+using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -16,6 +18,9 @@ internal sealed class LexicalIndex
     private readonly Dictionary<string, int> _df = new();
     private long _totalLen;
     private readonly object _lock = new();
+    private readonly ILogger _log;
+
+    public LexicalIndex(ILogger? logger = null) => _log = logger ?? NullLogger.Instance;
 
     public void Add(StoredChunk chunk)
     {

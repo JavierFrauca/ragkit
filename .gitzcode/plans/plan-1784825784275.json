@@ -1,0 +1,99 @@
+{
+  "id": "plan-1784825784275",
+  "title": "Plan de Mejoras RagKit v2.0 — Revisión Completa",
+  "status": "active",
+  "steps": [
+    {
+      "id": "step-1",
+      "text": "1. Observabilidad — logging + tracing (ILogger, ActivitySource en todo el pipeline)",
+      "status": "in_progress"
+    },
+    {
+      "id": "step-2",
+      "text": "2. Excepciones tipadas — jerarquía de excepciones (LlmException, StoreException, etc.) en vez de RagKitException genérica",
+      "status": "pending"
+    },
+    {
+      "id": "step-3",
+      "text": "3. Rate limiting interno — SemaphoreSlim para limitar llamadas concurrentes al LLM e ingestiones paralelas",
+      "status": "pending"
+    },
+    {
+      "id": "step-4",
+      "text": "4. CI con docker-compose — tests de integración contra Qdrant/Postgres/SQL Server reales en CI",
+      "status": "pending"
+    },
+    {
+      "id": "step-5",
+      "text": "5. Tests para conectores sin cobertura — proyectos de test para Onnx, Mcp, Extractors, Markdown, Postgres, SqlServer",
+      "status": "pending"
+    },
+    {
+      "id": "step-6",
+      "text": "6. Cache de embeddings para find_domains/find_labels — evitar recalcular embeddings de descripciones en cada llamada",
+      "status": "pending"
+    },
+    {
+      "id": "step-7",
+      "text": "7. Stemming en BM25 — algoritmo Snowball (es/en) + stop words para mejorar recall léxico",
+      "status": "pending"
+    },
+    {
+      "id": "step-8",
+      "text": "8. Cancelación en chunking — CancellationToken en MarkdownChunker.ChunkAsync e IngestAsync",
+      "status": "pending"
+    },
+    {
+      "id": "step-9",
+      "text": "9. Progreso granular en ingesta — IProgress<IngestProgress> en IngestAsync/IngestFileAsync/IngestFolderAsync",
+      "status": "pending"
+    },
+    {
+      "id": "step-10",
+      "text": "10. Refactor de RagClient en handlers internos — extraer IngestionHandler, QueryHandler, AgentHandler",
+      "status": "pending"
+    },
+    {
+      "id": "step-11",
+      "text": "11. Internacionalización de strings — extraer todos los strings internos (prompts, errores, descripciones de tools) a recursos localizables (es/en)",
+      "status": "pending"
+    },
+    {
+      "id": "step-12",
+      "text": "12. IDisposable/IAsyncDisposable en RagClient — liberar HttpClient, SemaphoreSlim y recursos nativos",
+      "status": "pending"
+    },
+    {
+      "id": "step-13",
+      "text": "13. Validación de RagOptions en CreateAsync — rechazar configuraciones inválidas (TopK≤0, thresholds fuera de rango) al inicio",
+      "status": "pending"
+    },
+    {
+      "id": "step-14",
+      "text": "14. Retry en embedding API calls — HttpRetry también para OpenAiEmbedder, igual que los LLM",
+      "status": "pending"
+    },
+    {
+      "id": "step-15",
+      "text": "15. Límite de seguridad en EnumerateAsync — evitar OOM con stores muy grandes; paginar o capar",
+      "status": "pending"
+    },
+    {
+      "id": "step-16",
+      "text": "16. Metadata arbitraria por documento — diccionario clave-valor en EmbeddedChunk/StoredChunk/StoredHit",
+      "status": "pending"
+    },
+    {
+      "id": "step-17",
+      "text": "17. Auth por API Key en el Dashboard — autenticación integrada sin delegar en el consumidor",
+      "status": "pending"
+    },
+    {
+      "id": "step-18",
+      "text": "18. Índice BM25 con respaldo en disco (SQLite) — para stores con >100K chunks sin saturar memoria",
+      "status": "pending"
+    }
+  ],
+  "createdAt": "2026-07-23T16:56:24.275Z",
+  "updatedAt": "2026-07-23T21:07:56.604Z"
+}

@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -18,8 +20,9 @@ namespace RagKit.Internal;
 internal sealed class Guardrail
 {
     private readonly IChatClient _llm;
+    private readonly ILogger _log;
 
-    public Guardrail(IChatClient llm) => _llm = llm;
+    public Guardrail(IChatClient llm, ILogger? logger = null) { _llm = llm; _log = logger ?? NullLogger.Instance; }
 
     // Curated PII markers (deterministic, opt-in via GuardrailPiiCheck).
     private static readonly Regex[] PiiPatterns =

@@ -1,5 +1,8 @@
-﻿using System.Runtime.CompilerServices;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RagKit.Agent;
 using RagKit.Internal;
 
@@ -23,7 +26,7 @@ public sealed class RagClient
     private readonly Guardrail _guardrail;
     private readonly Summarizer _summarizer;
     private readonly List<IRagTool> _externalTools = new();
-    private readonly LexicalIndex _lexical = new();
+    private readonly LexicalIndex _lexical;
     private readonly SemaphoreSlim _lexicalGate = new(1, 1);
     private bool _lexicalLoaded;
     private IReranker? _reranker;
@@ -32,20 +35,25 @@ public sealed class RagClient
     // Volatile reference swaps give lock-free, consistent reads on the hot query path.
     private volatile IReadOnlyList<ProfileInfo> _profiles = Array.Empty<ProfileInfo>();
     private volatile IReadOnlyList<GuardrailRule> _guardrails = Array.Empty<GuardrailRule>();
+    private readonly ILogger _log;
     private readonly SemaphoreSlim _configGate = new(1, 1);
 
-    internal RagClient(RagOptions options, IEmbedder embedder, IVectorStore store, IChatClient answer, IChatClient classifier)
+    internal RagClient(RagOptions options, IEmbedder embedder, IVectorStore store, IChatClient answer, IChatClient classifier, ILoggerFactory? loggerFactory = null)
     {
+        var lf = loggerFactory ?? NullLoggerFactory.Instance;
+        _log = lf.CreateLogger<RagClient>();
         _options = options;
         _embedder = embedder;
         _store = store;
         _answer = answer;
-        _classifier = new Classifier(classifier);
-        _router = new QueryRouter(classifier);
-        _guardrail = new Guardrail(classifier);
-        _summarizer = new Summarizer(classifier);
+        _classifier = new Classifier(classifier, lf.CreateLogger<Classifier>());
+        _router = new QueryRouter(classifier, lf.CreateLogger<QueryRouter>());
+        _guardrail = new Guardrail(classifier, lf.CreateLogger<Guardrail>());
+        _summarizer = new Summarizer(classifier, lf.CreateLogger<Summarizer>());
         // Opt-in default reranker (tier-2 reorders candidates instead of a local
         // cross-encoder). SetReranker, called after CreateAsync, always overrides this.
+        _lexical = new LexicalIndex(lf.CreateLogger<LexicalIndex>());
+        MarkdownChunker.SetLogger(lf.CreateLogger("MarkdownChunker"));
         if (options.EnableLlmRerank) _reranker = new LlmReranker(classifier);
         // Seed the in-memory config from options. CreateAsync later reconciles this
         // with what's persisted in the store (store wins if it already has entries).
@@ -62,9 +70,9 @@ public sealed class RagClient
         if (options is null) throw new ArgumentNullException(nameof(options));
         var embedder = EmbedderFactory.Create(options.Embedder);
         var store = VectorStoreFactory.Create(options.Store);
-        var answer = BuildChat(options.Answer, "Answer (tier-1)");
-        var classifier = options.Classifier is { IsConfigured: true } c2 ? BuildChat(c2, "Classifier (tier-2)") : answer;
-        var client = new RagClient(options, embedder, store, answer, classifier);
+        var answer = BuildChat(options.Answer, "Answer (tier-1)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>());
+        var classifier = options.Classifier is { IsConfigured: true } c2 ? BuildChat(c2, "Classifier (tier-2)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>()) : answer;
+        var client = new RagClient(options, embedder, store, answer, classifier, options.LoggerFactory);
         // Async one-time embedder init (probe dimension / load model) before the
         // store's model+dimension guard runs — no blocking work in constructors.
         await embedder.InitializeAsync(ct).ConfigureAwait(false);
@@ -115,13 +123,13 @@ public sealed class RagClient
     /// <summary>Remove a domain's prompt override, if any. Returns true if one was removed.</summary>
     public bool RemoveDomainPrompt(string domain) => _options.DomainPrompts.Remove(domain);
 
-    private static IChatClient BuildChat(LlmConfig cfg, string which)
+    private static IChatClient BuildChat(LlmConfig cfg, string which, ILogger? logger = null)
     {
         if (!cfg.IsConfigured)
             throw new RagKitException($"El LLM '{which}' no está configurado (faltan Url/Model).");
         return new OpenAiChatClient(cfg.Url, cfg.ApiKey, cfg.Model, timeoutSeconds: cfg.TimeoutSeconds,
             supportsTools: cfg.SupportsTools ?? true,
-            parseXmlToolCalls: cfg.ParseXmlToolCalls); // null = auto-detect by model name
+            parseXmlToolCalls: cfg.ParseXmlToolCalls, logger: logger); // null = auto-detect by model name
     }
 
     // --- structure -----------------------------------------------------------

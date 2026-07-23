@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -13,8 +15,9 @@ namespace RagKit.Internal;
 internal sealed class QueryRouter
 {
     private readonly IChatClient _llm;
+    private readonly ILogger _log;
 
-    public QueryRouter(IChatClient llm) => _llm = llm;
+    public QueryRouter(IChatClient llm, ILogger? logger = null) { _llm = llm; _log = logger ?? NullLogger.Instance; }
 
     public async Task<RouteDecision> RouteAsync(
         string question,

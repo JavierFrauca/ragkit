@@ -1,4 +1,6 @@
-﻿namespace RagKit;
+﻿using Microsoft.Extensions.Logging;
+
+namespace RagKit;
 
 /// <summary>An OpenAI-compatible LLM endpoint (OpenAI, DeepSeek, Groq, local…).</summary>
 public sealed class LlmConfig
@@ -204,4 +206,7 @@ public sealed class RagOptions
     /// <see cref="LlmConfig.TimeoutSeconds"/> (× 3 retries) per document. Default 20.
     /// </summary>
     public int ContextualEmbeddingTimeoutSeconds { get; set; } = 20;
+
+    /// <summary>Optional logger factory for structured tracing.</summary>
+    public ILoggerFactory? LoggerFactory { get; set; }
 }

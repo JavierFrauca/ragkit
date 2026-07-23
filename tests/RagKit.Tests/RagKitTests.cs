@@ -1122,7 +1122,9 @@ public class RagKitTests
 
         var emb = new ApiEmbedder(new EmbedderConfig
         {
-            Kind = EmbedderKind.OpenAi, Url = url, Model = model,
+            Kind = EmbedderKind.OpenAi,
+            Url = url,
+            Model = model,
             ApiKey = Environment.GetEnvironmentVariable("RAGKIT_EMBED_KEY"),
         });
         Assert.True(emb.Dimension > 0);

@@ -95,7 +95,7 @@ public sealed class Rag
             // 1) El LLM que redacta las respuestas (Ollama, modelo qwen2.5:7b).
             //    TimeoutSeconds alto: un 7B en local (sobre todo en CPU) puede tardar
             //    minutos en contextos grandes; así no se cancela la respuesta.
-            Answer   = new LlmConfig { Url = OllamaUrl, Model = "qwen2.5:7b", TimeoutSeconds = 600 },
+            Answer = new LlmConfig { Url = OllamaUrl, Model = "qwen2.5:7b", TimeoutSeconds = 600 },
             // 2) El modelo de embeddings (Ollama, nomic-embed-text → 768 dimensiones).
             Embedder = new EmbedderConfig { Kind = EmbedderKind.OpenAi, Url = OllamaUrl, Model = "nomic-embed-text", Dimension = 768 },
             // 3) Sin auto-clasificación: en este ejemplo todo va a un único dominio.

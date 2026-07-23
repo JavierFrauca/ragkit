@@ -1,6 +1,8 @@
-﻿using Markdig;
+using Markdig;
 using Markdig.Extensions.Tables;
 using Markdig.Syntax;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
 
@@ -20,9 +22,13 @@ internal sealed record MarkdownChunk(string Text, string Breadcrumb, bool IsAtom
 internal static class MarkdownChunker
 {
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
+    private static ILogger _log = NullLogger.Instance;
+
+    public static void SetLogger(ILogger logger) => _log = logger;
 
     public static List<MarkdownChunk> Chunk(string markdown, int maxChars, int overlap = 200)
     {
+        _log.LogDebug("Chunking markdown: chars={Len} max={Max} overlap={Overlap}", markdown.Length, maxChars, overlap);
         var result = new List<MarkdownChunk>();
         if (string.IsNullOrWhiteSpace(markdown)) return result;
 
@@ -65,6 +71,7 @@ internal static class MarkdownChunker
             sectionBuffer.Add(block);
         }
         FlushSection();
+        _log.LogDebug("Markdown chunked: {ChunkCount} chunks", result.Count);
         return result;
     }
 

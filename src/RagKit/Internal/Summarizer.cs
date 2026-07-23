@@ -1,4 +1,7 @@
-﻿namespace RagKit.Internal;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace RagKit.Internal;
 
 /// <summary>
 /// Tier-2 helpers producing short summaries used as embedding context — never
@@ -15,8 +18,9 @@ internal sealed class Summarizer
     private const int ExcerptChars = 6000;
 
     private readonly IChatClient _llm;
+    private readonly ILogger _log;
 
-    public Summarizer(IChatClient llm) => _llm = llm;
+    public Summarizer(IChatClient llm, ILogger? logger = null) { _llm = llm; _log = logger ?? NullLogger.Instance; }
 
     public async Task<string> SummarizeDocumentAsync(string fullText, CancellationToken ct)
     {
