@@ -6,12 +6,12 @@
     {
       "id": "step-1",
       "text": "1. Observabilidad — logging + tracing (ILogger, ActivitySource en todo el pipeline)",
-      "status": "in_progress"
+      "status": "completed"
     },
     {
       "id": "step-2",
       "text": "2. Excepciones tipadas — jerarquía de excepciones (LlmException, StoreException, etc.) en vez de RagKitException genérica",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "id": "step-3",
@@ -95,5 +95,5 @@
     }
   ],
   "createdAt": "2026-07-23T16:56:24.275Z",
-  "updatedAt": "2026-07-23T21:07:56.604Z"
+  "updatedAt": "2026-07-23T21:42:40.442Z"
 }

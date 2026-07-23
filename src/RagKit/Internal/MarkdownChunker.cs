@@ -2,6 +2,7 @@ using Markdig;
 using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Microsoft.Extensions.Logging;
+using RagKit;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RagKit.Internal;
@@ -32,7 +33,9 @@ internal static class MarkdownChunker
         var result = new List<MarkdownChunk>();
         if (string.IsNullOrWhiteSpace(markdown)) return result;
 
-        var document = Markdown.Parse(markdown, Pipeline);
+        MarkdownDocument document;
+        try { document = Markdown.Parse(markdown, Pipeline); }
+        catch (Exception ex) { throw new ChunkingException("Markdig parse error", ex); }
         var headingStack = new List<(int Level, string Text)>();
         var sectionBuffer = new List<Block>();
 

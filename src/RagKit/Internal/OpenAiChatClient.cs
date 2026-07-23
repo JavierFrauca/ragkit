@@ -483,8 +483,4 @@ internal sealed class OpenAiChatClient : IChatClient
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "\u2026";
 }
 
-/// <summary>Friendly error surfaced to the consumer (no stack-trace spelunking).</summary>
-public sealed class RagKitException : Exception
-{
-    public RagKitException(string message) : base(message) { }
-}
+
