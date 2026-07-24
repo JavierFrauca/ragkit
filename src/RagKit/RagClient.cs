@@ -37,12 +37,14 @@ public sealed class RagClient
     private volatile IReadOnlyList<GuardrailRule> _guardrails = Array.Empty<GuardrailRule>();
     private readonly ILogger _log;
     private readonly SemaphoreSlim _configGate = new(1, 1);
+    private readonly ConcurrencyGate _gate;
 
     internal RagClient(RagOptions options, IEmbedder embedder, IVectorStore store, IChatClient answer, IChatClient classifier, ILoggerFactory? loggerFactory = null)
     {
         var lf = loggerFactory ?? NullLoggerFactory.Instance;
         _log = lf.CreateLogger<RagClient>();
         _options = options;
+        _gate = new ConcurrencyGate(options.MaxConcurrentLlmCalls, options.MaxConcurrentIngestions);
         _embedder = embedder;
         _store = store;
         _answer = answer;
@@ -69,9 +71,10 @@ public sealed class RagClient
     {
         if (options is null) throw new ArgumentNullException(nameof(options));
         var embedder = EmbedderFactory.Create(options.Embedder);
+        var gate = new ConcurrencyGate(options.MaxConcurrentLlmCalls, options.MaxConcurrentIngestions);
         var store = VectorStoreFactory.Create(options.Store);
-        var answer = BuildChat(options.Answer, "Answer (tier-1)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>());
-        var classifier = options.Classifier is { IsConfigured: true } c2 ? BuildChat(c2, "Classifier (tier-2)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>()) : answer;
+        var answer = BuildChat(options.Answer, "Answer (tier-1)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>(), gate);
+        var classifier = options.Classifier is { IsConfigured: true } c2 ? BuildChat(c2, "Classifier (tier-2)", options.LoggerFactory?.CreateLogger<OpenAiChatClient>(), gate) : answer;
         var client = new RagClient(options, embedder, store, answer, classifier, options.LoggerFactory);
         // Async one-time embedder init (probe dimension / load model) before the
         // store's model+dimension guard runs — no blocking work in constructors.
@@ -123,11 +126,11 @@ public sealed class RagClient
     /// <summary>Remove a domain's prompt override, if any. Returns true if one was removed.</summary>
     public bool RemoveDomainPrompt(string domain) => _options.DomainPrompts.Remove(domain);
 
-    private static IChatClient BuildChat(LlmConfig cfg, string which, ILogger? logger = null)
+    private static IChatClient BuildChat(LlmConfig cfg, string which, ILogger? logger = null, ConcurrencyGate? gate = null)
     {
         if (!cfg.IsConfigured)
             throw new RagKitException($"El LLM '{which}' no está configurado (faltan Url/Model).");
-        return new OpenAiChatClient(cfg.Url, cfg.ApiKey, cfg.Model, timeoutSeconds: cfg.TimeoutSeconds,
+        return new OpenAiChatClient(cfg.Url, cfg.ApiKey, cfg.Model, gate: gate, timeoutSeconds: cfg.TimeoutSeconds,
             supportsTools: cfg.SupportsTools ?? true,
             parseXmlToolCalls: cfg.ParseXmlToolCalls, logger: logger); // null = auto-detect by model name
     }
@@ -268,6 +271,7 @@ public sealed class RagClient
         string text, string? source = null, string? domain = null,
         IEnumerable<string>? labels = null, CancellationToken ct = default)
     {
+        using var ingestSlot = await _gate.EnterIngestAsync(ct).ConfigureAwait(false);
         source ??= "doc";
         var domains = await _store.ListDomainsAsync(ct).ConfigureAwait(false);
         if (domains.Count == 0)

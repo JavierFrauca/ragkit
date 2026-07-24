@@ -1,4 +1,4 @@
-ï»¿using System.Net.Http;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using RagKit;
 using RagKit.Internal;
@@ -27,7 +27,7 @@ sealed class FakeChat(string response) : IChatClient
 }
 
 /// <summary>A tier-2 fake that never completes on its own (until its <see cref="ChatMessage"/>
-/// call's own <see cref="CancellationToken"/> fires) â€” used to verify contextual-embedding
+/// call's own <see cref="CancellationToken"/> fires) — used to verify contextual-embedding
 /// calls are bounded by their own short timeout instead of blocking ingestion.</summary>
 sealed class HangingChat : IChatClient
 {
@@ -41,7 +41,7 @@ sealed class HangingChat : IChatClient
     }
 }
 
-/// <summary>A tier-2 fake that always fails â€” used to verify contextual-embedding
+/// <summary>A tier-2 fake that always fails — used to verify contextual-embedding
 /// calls degrade gracefully instead of aborting the whole ingestion.</summary>
 sealed class ThrowingChat : IChatClient
 {
@@ -49,7 +49,7 @@ sealed class ThrowingChat : IChatClient
     public Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
     {
         Interlocked.Increment(ref Calls);
-        throw new RagKitException("El LLM respondiÃ³ 500: boom");
+        throw new RagKitException("El LLM respondió 500: boom");
     }
 }
 
@@ -80,7 +80,7 @@ sealed class FakeAgentChat : IChatClient
             {
                 new ToolCall("call_1", "search_knowledge_base", "{\"query\":\"contrato\"}")
             }));
-        return Task.FromResult(new AgentTurn("respuesta final basada en bÃºsqueda", Array.Empty<ToolCall>()));
+        return Task.FromResult(new AgentTurn("respuesta final basada en búsqueda", Array.Empty<ToolCall>()));
     }
 }
 
@@ -106,7 +106,7 @@ sealed class ScriptedSearchChat(string argumentsJson, string finalAnswer = "list
 }
 
 /// <summary>A tool-capable fake whose first turn calls a given tool with given arguments,
-/// then "answers" by echoing back that tool's own result verbatim â€” lets tests assert on
+/// then "answers" by echoing back that tool's own result verbatim — lets tests assert on
 /// what a tool actually returned without white-box instantiating it.</summary>
 sealed class EchoToolResultChat(string toolName, string argumentsJson) : IChatClient
 {
@@ -124,7 +124,7 @@ sealed class EchoToolResultChat(string toolName, string argumentsJson) : IChatCl
 }
 
 /// <summary>A tool-capable fake that answers immediately (no tool calls) but records the
-/// tool specs and messages it was offered â€” for asserting on scoping/history. Implements
+/// tool specs and messages it was offered — for asserting on scoping/history. Implements
 /// both <see cref="NextAsync"/> and <see cref="NextStreamAsync"/> so one spy covers both
 /// the non-streamed and streamed agent loops.</summary>
 sealed class SpyAgentChat : IChatClient
@@ -254,7 +254,7 @@ sealed class FrontReranker(string front) : IReranker
             candidates.OrderByDescending(h => h.Source == front).Take(topK).ToList());
 }
 
-/// <summary>Wraps <see cref="LocalEmbedder"/> (deterministic hash vectors â€” good for
+/// <summary>Wraps <see cref="LocalEmbedder"/> (deterministic hash vectors — good for
 /// asserting two texts embed to different vectors) with a configurable <see
 /// cref="MaxChunkChars"/>, so ingest tests can force a small/large chunk budget
 /// without needing a real semantic model on disk.</summary>
@@ -288,7 +288,7 @@ public class RagKitTests
         await rag.DefineDomainAsync("docs");
 
         await rag.IngestAsync("El contrato laboral indefinido regula el empleo fijo.", "laboral.txt", domain: "docs");
-        await rag.IngestAsync("La receta de pizza con piÃ±a lleva masa y queso.", "cocina.txt", domain: "docs");
+        await rag.IngestAsync("La receta de pizza con piña lleva masa y queso.", "cocina.txt", domain: "docs");
 
         var ans = await rag.AskAsync("contrato laboral", domain: "docs");
         Assert.Equal("respuesta simulada", ans.Answer);
@@ -322,11 +322,11 @@ public class RagKitTests
         Assert.Equal(1, classifier.Calls);   // tier-2 classified
         Assert.Equal(0, answer.Calls);        // tier-1 untouched on ingest
 
-        // Now a low-confidence classification â†’ rejected for non-correspondence.
+        // Now a low-confidence classification ? rejected for non-correspondence.
         var low = new FakeChat("{\"domain\":\"fiscal\",\"labels\":[],\"confidence\":0.4}");
         var rag2 = await BuildAsync(answer, low, new RagOptions { ClassificationThreshold = 0.8 });
         await rag2.DefineDomainAsync("fiscal", "impuestos");
-        var rej = await rag2.IngestAsync("Texto irrelevante sobre jardinerÃ­a.", "x.txt");
+        var rej = await rag2.IngestAsync("Texto irrelevante sobre jardinería.", "x.txt");
         Assert.True(rej.Rejected);
         Assert.Contains("confianza", rej.Reason);
     }
@@ -401,7 +401,7 @@ public class RagKitTests
     {
         var tier2 = new FakeChat("{\"allowed\":true}");
         var g = new Guardrail(tier2);
-        var d = await g.CheckInputAsync("hola, Â¿quÃ© tal?", Array.Empty<GuardrailRule>(), maxLength: 4000, piiCheck: false, default);
+        var d = await g.CheckInputAsync("hola, ¿qué tal?", Array.Empty<GuardrailRule>(), maxLength: 4000, piiCheck: false, default);
         Assert.True(d.Allowed);
         Assert.Equal(1, tier2.Calls);   // always-on input guardrail: the LLM net ran despite no rules
     }
@@ -418,7 +418,7 @@ public class RagKitTests
     public async Task Guardrail_pii_check_blocks_only_when_enabled()
     {
         var g = new Guardrail(new FakeChat("{\"allowed\":true}"));
-        const string q = "mi email es juan.perez@example.com, Â¿quÃ© dice el contrato?";
+        const string q = "mi email es juan.perez@example.com, ¿qué dice el contrato?";
         Assert.False((await g.CheckInputAsync(q, Array.Empty<GuardrailRule>(), 4000, piiCheck: true, default)).Allowed);
         Assert.True((await g.CheckInputAsync(q, Array.Empty<GuardrailRule>(), 4000, piiCheck: false, default)).Allowed);
     }
@@ -432,14 +432,14 @@ public class RagKitTests
             : "{}");
         var opts = new RagOptions();
         opts.Profiles.Add(new ProfileInfo("electricista", "construccion",
-            Prompt: "Eres electricista. Responde con normativa elÃ©ctrica."));
+            Prompt: "Eres electricista. Responde con normativa eléctrica."));
         var rag = await BuildAsync(answer, tier2, opts);
         await rag.DefineDomainAsync("construccion", "obra");
-        await rag.IngestAsync("La secciÃ³n de cable para 25A es 4mmÂ².", "elec.txt", domain: "construccion");
+        await rag.IngestAsync("La sección de cable para 25A es 4mm².", "elec.txt", domain: "construccion");
 
-        var ans = await rag.AskAsync("Â¿quÃ© secciÃ³n de cable para 25 amperios?");
+        var ans = await rag.AskAsync("¿qué sección de cable para 25 amperios?");
         Assert.Equal("respuesta", ans.Answer);
-        Assert.Equal("Eres electricista. Responde con normativa elÃ©ctrica.", answer.Last![0].Content); // profile prompt used
+        Assert.Equal("Eres electricista. Responde con normativa eléctrica.", answer.Last![0].Content); // profile prompt used
     }
 
     [Fact]
@@ -483,7 +483,7 @@ public class RagKitTests
     [Fact]
     public async Task Input_guardrail_blocks_before_retrieval_and_tier1()
     {
-        var answer = new FakeChat("no deberÃ­a llamarse");
+        var answer = new FakeChat("no debería llamarse");
         var tier2 = new RoutingChat(m =>
             m[0].Content.Contains("Enrutas") ? "{\"domain\":\"docs\",\"profiles\":[],\"confidence\":0.9}" :
             m[0].Content.Contains("filtro de seguridad") ? "{\"allowed\":false,\"reason\":\"regla\"}" : "{}");
@@ -588,7 +588,7 @@ public class RagKitTests
         await rag.DefineDomainAsync("docs");
         await rag.IngestAsync("contenido", "d.txt", domain: "docs");
 
-        var stream = await rag.AskStreamAsync("Â¿cuÃ¡l es la clave?", domain: "docs");
+        var stream = await rag.AskStreamAsync("¿cuál es la clave?", domain: "docs");
         var sb = new System.Text.StringBuilder();
         await foreach (var t in stream.Tokens) sb.Append(t);
         Assert.Equal(opts.GuardrailRejectionMessage, sb.ToString());   // buffered, validated, blocked
@@ -645,7 +645,7 @@ public class RagKitTests
 
         var ans = await rag.AskAgentAsync("contrato", "docs");
 
-        Assert.Equal("respuesta final basada en bÃºsqueda", ans.Answer);
+        Assert.Equal("respuesta final basada en búsqueda", ans.Answer);
         Assert.NotEmpty(ans.Citations);           // the search tool surfaced the chunk
         Assert.Equal("laboral.txt", ans.Citations[0].Source);
     }
@@ -680,7 +680,7 @@ public class RagKitTests
         var rag = await BuildAsync(spy, new FakeChat("{}"));
         await rag.DefineDomainAsync("docs");
 
-        await rag.AskAgentAsync("pregunta", "docs");  // no `tools:` â€” default must stay All
+        await rag.AskAgentAsync("pregunta", "docs");  // no `tools:` — default must stay All
 
         Assert.Equal(
             new[]
@@ -861,7 +861,7 @@ public class RagKitTests
 
         Assert.StartsWith($"[{ordered[2].ChunkIndex}]", await AdjacentAsync(middle.Id, "next"));
         Assert.StartsWith($"[{ordered[0].ChunkIndex}]", await AdjacentAsync(middle.Id, "previous"));
-        Assert.Contains("Ãºltimo chunk", await AdjacentAsync(ordered[^1].Id, "next"));
+        Assert.Contains("último chunk", await AdjacentAsync(ordered[^1].Id, "next"));
         Assert.Contains("primer chunk", await AdjacentAsync(ordered[0].Id, "previous"));
     }
 
@@ -876,7 +876,7 @@ public class RagKitTests
 
         var ans = await rag.AskAgentAsync("x", domain: "docs", tools: AgentToolScope.Classification);
 
-        Assert.Contains("no se encontrÃ³", ans.Answer);
+        Assert.Contains("no se encontró", ans.Answer);
     }
 
     [Fact]
@@ -887,16 +887,16 @@ public class RagKitTests
         await rag.DefineDomainAsync("docs");
         var history = new List<ChatMessage>
         {
-            new("user", "Â¿quÃ© es RagKit?"),
-            new("assistant", "Una librerÃ­a de RAG."),
+            new("user", "¿qué es RagKit?"),
+            new("assistant", "Una librería de RAG."),
         };
 
-        var ans = await rag.AskAgentAsync("Â¿y quÃ© mÃ¡s ofrece?", history, domain: "docs", tools: AgentToolScope.SearchOnly);
+        var ans = await rag.AskAgentAsync("¿y qué más ofrece?", history, domain: "docs", tools: AgentToolScope.SearchOnly);
 
         Assert.Equal("respuesta sin buscar", ans.Answer);
-        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "Â¿quÃ© es RagKit?");
-        Assert.Contains(spy.LastMessages!, m => m.Role == "assistant" && m.Content == "Una librerÃ­a de RAG.");
-        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "Â¿y quÃ© mÃ¡s ofrece?");
+        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿qué es RagKit?");
+        Assert.Contains(spy.LastMessages!, m => m.Role == "assistant" && m.Content == "Una librería de RAG.");
+        Assert.Contains(spy.LastMessages!, m => m.Role == "user" && m.Content == "¿y qué más ofrece?");
     }
 
     // --- streamed agentic mode -------------------------------------------------
@@ -1006,7 +1006,7 @@ public class RagKitTests
             "data: [DONE]\n\n";
 
         using var http = new System.Net.Http.HttpClient(new SseHandler(sse)) { BaseAddress = new Uri("http://x/") };
-        var client = new OpenAiChatClient("http://x", "", "m", http);
+        var client = new OpenAiChatClient("http://x", "", "m", http: http);
 
         var deltas = new List<AgentDelta>();
         await foreach (var d in client.NextStreamAsync(
@@ -1077,9 +1077,9 @@ public class RagKitTests
         if (RealLlm() is null) return; // skip without a key
         var rag = await RagClient.CreateAsync(RealOpts(autoClassify: false));
         await rag.DefineDomainAsync("docs");
-        await rag.IngestAsync("El cÃ³digo interno del proyecto Zeta es QX-9981.", "zeta.txt", domain: "docs");
+        await rag.IngestAsync("El código interno del proyecto Zeta es QX-9981.", "zeta.txt", domain: "docs");
 
-        var ans = await rag.AskAsync("Â¿CuÃ¡l es el cÃ³digo interno del proyecto Zeta?", domain: "docs");
+        var ans = await rag.AskAsync("¿Cuál es el código interno del proyecto Zeta?", domain: "docs");
         Assert.Contains("QX-9981", ans.Answer, StringComparison.OrdinalIgnoreCase);
         Assert.NotEmpty(ans.Citations);
     }
@@ -1090,10 +1090,10 @@ public class RagKitTests
         if (RealLlm() is null) return;
         var rag = await RagClient.CreateAsync(RealOpts(autoClassify: true));
         await rag.DefineDomainAsync("fiscal", "impuestos, IVA, IRPF, tributos");
-        await rag.DefineDomainAsync("rrhh", "personal, nÃ³minas, contratos laborales");
+        await rag.DefineDomainAsync("rrhh", "personal, nóminas, contratos laborales");
         await rag.DefineLabelAsync("iva");
 
-        var res = await rag.IngestAsync("El tipo general del IVA en EspaÃ±a es del 21% desde 2012.", "iva.txt");
+        var res = await rag.IngestAsync("El tipo general del IVA en España es del 21% desde 2012.", "iva.txt");
         Assert.False(res.Rejected, res.Reason);
         Assert.Equal("fiscal", res.Domain);
     }
@@ -1104,10 +1104,10 @@ public class RagKitTests
         if (RealLlm() is null) return;
         var rag = await RagClient.CreateAsync(RealOpts(autoClassify: false));
         await rag.DefineDomainAsync("docs");
-        await rag.IngestAsync("La clave de activaciÃ³n del mÃ³dulo Orion es ORN-7744-XK.", "orion.txt", domain: "docs");
+        await rag.IngestAsync("La clave de activación del módulo Orion es ORN-7744-XK.", "orion.txt", domain: "docs");
 
-        // The model can't know this invented fact â€” it must call search_knowledge_base.
-        var ans = await rag.AskAgentAsync("Â¿CuÃ¡l es la clave de activaciÃ³n del mÃ³dulo Orion?", domain: "docs");
+        // The model can't know this invented fact — it must call search_knowledge_base.
+        var ans = await rag.AskAgentAsync("¿Cuál es la clave de activación del módulo Orion?", domain: "docs");
         Assert.Contains("ORN-7744-XK", ans.Answer, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1156,7 +1156,7 @@ public class RagKitTests
             ": keep-alive\n\n" +
             "data: [DONE]\n\n";
         using var http = new System.Net.Http.HttpClient(new SseHandler(sse)) { BaseAddress = new Uri("http://x/") };
-        var client = new OpenAiChatClient("http://x", "", "m", http);
+        var client = new OpenAiChatClient("http://x", "", "m", http: http);
         var sb = new System.Text.StringBuilder();
         await foreach (var piece in client.StreamAsync(new[] { new ChatMessage("user", "hi") }))
             sb.Append(piece);
@@ -1166,11 +1166,11 @@ public class RagKitTests
     [Fact]
     public async Task Default_streaming_yields_completion_as_one_chunk()
     {
-        IChatClient chat = new FakeChat("respuesta Ãºnica");
+        IChatClient chat = new FakeChat("respuesta única");
         var pieces = new List<string>();
         await foreach (var p in chat.StreamAsync(new[] { new ChatMessage("user", "x") }))
             pieces.Add(p);
-        Assert.Equal(new[] { "respuesta Ãºnica" }, pieces);
+        Assert.Equal(new[] { "respuesta única" }, pieces);
     }
 
     [Fact]
@@ -1178,7 +1178,7 @@ public class RagKitTests
     {
         var lex = new LexicalIndex();
         lex.Add(new StoredChunk("a.txt", "el contrato laboral indefinido regula el empleo", null, Array.Empty<string>()));
-        lex.Add(new StoredChunk("b.txt", "la receta de pizza con piÃ±a y queso", null, Array.Empty<string>()));
+        lex.Add(new StoredChunk("b.txt", "la receta de pizza con piña y queso", null, Array.Empty<string>()));
         lex.Add(new StoredChunk("c.txt", "disposiciones generales del convenio colectivo", null, Array.Empty<string>()));
         var hits = lex.Search("contrato laboral", 3, null, null);
         Assert.NotEmpty(hits);
@@ -1190,10 +1190,10 @@ public class RagKitTests
     {
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, TopK = 3 });
         await rag.DefineDomainAsync("docs");
-        await rag.IngestAsync("el artÃ­culo 14 regula las vacaciones retribuidas", "art14.txt", domain: "docs");
+        await rag.IngestAsync("el artículo 14 regula las vacaciones retribuidas", "art14.txt", domain: "docs");
         await rag.IngestAsync("disposiciones generales del convenio colectivo", "gen.txt", domain: "docs");
 
-        var ans = await rag.AskAsync("artÃ­culo 14", domain: "docs");
+        var ans = await rag.AskAsync("artículo 14", domain: "docs");
         Assert.Equal("art14.txt", ans.Citations[0].Source);
     }
 
@@ -1221,7 +1221,7 @@ public class RagKitTests
     {
         // Regression: the post-ingest sync into the lexical index used to build a
         // StoredChunk without IngestedAtUtc, even though the real timestamp was in
-        // scope â€” the lexical-only copy of a freshly ingested chunk got a default
+        // scope — the lexical-only copy of a freshly ingested chunk got a default
         // (epoch) timestamp instead.
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { Hybrid = true, AutoClassify = false, TopK = 3 });
         await rag.DefineDomainAsync("docs");
@@ -1369,7 +1369,7 @@ public class RagKitTests
         var c = await emb.EmbedAsync("a pineapple pizza recipe");    // unrelated
 
         static double Cos(float[] x, float[] y) { double s = 0; for (int i = 0; i < x.Length; i++) s += x[i] * y[i]; return s; }
-        Assert.True(Cos(a, b) > Cos(a, c), "frases relacionadas deben ser mÃ¡s similares que las no relacionadas");
+        Assert.True(Cos(a, b) > Cos(a, c), "frases relacionadas deben ser más similares que las no relacionadas");
     }
 
     [Fact]
@@ -1381,10 +1381,10 @@ public class RagKitTests
         using var rr = new OnnxCrossEncoderReranker(dir);
         var cands = new List<StoredHit>
         {
-            new("a.txt", "el gato duerme plÃ¡cidamente en el sofÃ¡ del salÃ³n", null, Array.Empty<string>(), 0),
-            new("b.txt", "la secciÃ³n de cable para una carga de 25 amperios es de 4 mmÂ²", null, Array.Empty<string>(), 0),
+            new("a.txt", "el gato duerme plácidamente en el sofá del salón", null, Array.Empty<string>(), 0),
+            new("b.txt", "la sección de cable para una carga de 25 amperios es de 4 mm²", null, Array.Empty<string>(), 0),
         };
-        var ranked = await rr.RerankAsync("Â¿quÃ© secciÃ³n de cable necesito para 25 A?", cands, 2);
+        var ranked = await rr.RerankAsync("¿qué sección de cable necesito para 25 A?", cands, 2);
         Assert.Equal("b.txt", ranked[0].Source);   // the electrical passage outranks the cat one
     }
 
@@ -1540,7 +1540,7 @@ public class RagKitTests
     public async Task SqlServer_label_filter_is_exact_even_when_outranked_by_unlabeled_chunks_when_available()
     {
         // Regression: the old implementation over-fetched TOP(k*5) by vector similarity and
-        // filtered labels afterwards in process. With k=1 that over-fetch window is 5 rows â€”
+        // filtered labels afterwards in process. With k=1 that over-fetch window is 5 rows —
         // if the one chunk carrying the requested label is vector-wise less similar to the
         // query than 5 unrelated chunks, the old code would silently return zero hits even
         // though a matching chunk exists.
@@ -1552,13 +1552,13 @@ public class RagKitTests
         catch (Exception ex) when (ex is not Xunit.Sdk.XunitException) { return; }
 
         await store.CreateDomainAsync("fiscal", "impuestos");
-        var query = "impuesto sobre el valor aÃ±adido tipo general";
+        var query = "impuesto sobre el valor añadido tipo general";
         for (int i = 0; i < 5; i++)
         {
-            var text = $"impuesto sobre el valor aÃ±adido variante {i}"; // shares vocabulary with the query -> ranks high
+            var text = $"impuesto sobre el valor añadido variante {i}"; // shares vocabulary with the query -> ranks high
             await store.AddChunkAsync($"noise{i}.txt", text, "fiscal", Array.Empty<string>(), await emb.EmbedAsync(text));
         }
-        const string targetText = "receta de pizza con piÃ±a y queso"; // unrelated vocabulary -> ranks last
+        const string targetText = "receta de pizza con piña y queso"; // unrelated vocabulary -> ranks last
         await store.AddChunkAsync("target.txt", targetText, "fiscal", new[] { "iva" }, await emb.EmbedAsync(targetText));
 
         var hits = await store.SearchAsync(await emb.EmbedAsync(query), k: 1, "fiscal", new[] { "iva" });
@@ -1704,7 +1704,7 @@ public class RagKitTests
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { TopK = 3 });
         await rag.DefineDomainAsync("docs");
         await rag.IngestAsync("el contrato laboral indefinido regula el empleo fijo", "laboral.txt", domain: "docs");
-        await rag.IngestAsync("la receta de pizza con piÃ±a lleva masa y queso", "cocina.txt", domain: "docs");
+        await rag.IngestAsync("la receta de pizza con piña lleva masa y queso", "cocina.txt", domain: "docs");
 
         var removed = await rag.RemoveDocumentAsync("laboral.txt", "docs");
         Assert.Equal(1, removed);
@@ -1733,7 +1733,7 @@ public class RagKitTests
         Assert.Equal(2, all.Count);
         var laboral = Assert.Single(all, d => d.Source == "laboral.txt");
         Assert.Equal("docs", laboral.Domain);
-        Assert.True(laboral.ChunkCount > 1, "el texto largo deberÃ­a trocearse en mÃ¡s de un chunk");
+        Assert.True(laboral.ChunkCount > 1, "el texto largo debería trocearse en más de un chunk");
         Assert.InRange(laboral.IngestedAtUtc, before, after);
 
         var scoped = await rag.ListDocumentsAsync("otros");
@@ -1750,9 +1750,9 @@ public class RagKitTests
         await rag.DefineDomainAsync("payroll");
         await rag.DefineDomainAsync("fincas");
 
-        await rag.IngestAsync("nÃ³mina de enero", "n1.txt", domain: "payroll");
-        await rag.IngestAsync("nÃ³mina de febrero", "n2.txt", domain: "payroll");
-        await rag.IngestAsync("nÃ³mina de marzo", "n3.txt", domain: "payroll");
+        await rag.IngestAsync("nómina de enero", "n1.txt", domain: "payroll");
+        await rag.IngestAsync("nómina de febrero", "n2.txt", domain: "payroll");
+        await rag.IngestAsync("nómina de marzo", "n3.txt", domain: "payroll");
         await rag.IngestAsync("contrato de alquiler", "alquiler.txt", domain: "fincas");
 
         var removed = await rag.RemoveDomainAsync("payroll");
@@ -1773,7 +1773,7 @@ public class RagKitTests
     {
         // Regression: RemoveDomainAsync used to discard the "did the domain actually
         // exist" signal and return only the chunk count, so removing a never-defined
-        // domain (e.g. a typo) looked identical to removing an empty one â€” both gave 0.
+        // domain (e.g. a typo) looked identical to removing an empty one — both gave 0.
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"));
         await rag.DefineDomainAsync("empty-domain");
 
@@ -1794,7 +1794,7 @@ public class RagKitTests
         await rag.DefineDomainAsync("fincas");
 
         // Profile + domain-scoped guardrail on the domain being removed.
-        await rag.DefineProfileAsync(new ProfileInfo("gestor", "payroll", Prompt: "Eres gestor de nÃ³minas."));
+        await rag.DefineProfileAsync(new ProfileInfo("gestor", "payroll", Prompt: "Eres gestor de nóminas."));
         await rag.DefineGuardrailAsync(new GuardrailRule("No reveles el salario de otros empleados", GuardrailStage.Output, "payroll"));
         // Survivors: a profile/guardrail on the other domain, and a global guardrail.
         await rag.DefineProfileAsync(new ProfileInfo("notario", "fincas"));
@@ -1821,7 +1821,7 @@ public class RagKitTests
         var emb = new LocalEmbedder();
         await store.InitializeAsync(emb.ModelId, emb.Dimension);
 
-        await store.CreateDomainAsync("payroll", "nÃ³minas");
+        await store.CreateDomainAsync("payroll", "nóminas");
         await store.AddChunkAsync("n1.txt", "contenido", "payroll", Array.Empty<string>(), await emb.EmbedAsync("contenido"));
 
         // Deleting the domain definition alone doesn't touch its chunks.
@@ -1845,9 +1845,9 @@ public class RagKitTests
         // Force the chunker to produce more chunks than the page size below (default
         // chunk size 1000 / overlap 200 -> needs several thousand characters).
         var longText = string.Join(" ", Enumerable.Range(0, 120)
-            .Select(i => $"Frase nÃºmero {i} sobre el contrato laboral indefinido y sus condiciones."));
+            .Select(i => $"Frase número {i} sobre el contrato laboral indefinido y sus condiciones."));
         var ingested = await rag.IngestAsync(longText, "laboral.txt", domain: "docs");
-        Assert.True(ingested.ChunkCount >= 5, "el texto deberÃ­a trocearse en al menos 5 chunks para que la paginaciÃ³n tenga sentido");
+        Assert.True(ingested.ChunkCount >= 5, "el texto debería trocearse en al menos 5 chunks para que la paginación tenga sentido");
 
         var seen = new List<string>();
         string? cursor = null;
@@ -1876,7 +1876,7 @@ public class RagKitTests
         await rag.DefineDomainAsync("fincas");
 
         // Same filename, two domains (regression-adjacent to FR-08's cross-domain concern).
-        await rag.IngestAsync("contenido de nÃ³minas", "contrato.txt", domain: "payroll");
+        await rag.IngestAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
         await rag.IngestAsync("contenido de fincas, bien distinto", "contrato.txt", domain: "fincas");
 
         var payrollPage = await rag.ListChunksAsync("contrato.txt", domain: "payroll", take: 100);
@@ -1938,7 +1938,7 @@ public class RagKitTests
         await rag.DefineDomainAsync("payroll");
         await rag.DefineDomainAsync("fincas");
 
-        await rag.IngestIfChangedAsync("contenido de nÃ³minas", "contrato.txt", domain: "payroll");
+        await rag.IngestIfChangedAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
         await rag.IngestIfChangedAsync("contenido de fincas, distinto del anterior", "contrato.txt", domain: "fincas");
 
         var payrollDocs = await rag.ListDocumentsAsync("payroll");
@@ -1950,7 +1950,7 @@ public class RagKitTests
         Assert.Equal(2, await rag.ChunkCountAsync()); // both domains' chunks present, none cross-deleted
 
         // Re-ingesting the same content in each domain independently is still a no-op.
-        var unchangedPayroll = await rag.IngestIfChangedAsync("contenido de nÃ³minas", "contrato.txt", domain: "payroll");
+        var unchangedPayroll = await rag.IngestIfChangedAsync("contenido de nóminas", "contrato.txt", domain: "payroll");
         Assert.Equal(IngestOutcome.Unchanged, unchangedPayroll.Outcome);
         var unchangedFincas = await rag.IngestIfChangedAsync("contenido de fincas, distinto del anterior", "contrato.txt", domain: "fincas");
         Assert.Equal(IngestOutcome.Unchanged, unchangedFincas.Outcome);
@@ -2012,7 +2012,7 @@ public class RagKitTests
         Directory.CreateDirectory(Path.Combine(tmp, "sub"));
         File.WriteAllText(Path.Combine(tmp, "a.txt"), "contenido del fichero a");
         File.WriteAllText(Path.Combine(tmp, "sub", "b.md"), "contenido del fichero b");
-        File.WriteAllText(Path.Combine(tmp, "ignore.bin"), "no deberÃ­a ingestarse");
+        File.WriteAllText(Path.Combine(tmp, "ignore.bin"), "no debería ingestarse");
 
         var rag = await BuildAsync(new FakeChat("ok"), new FakeChat("{}"), new RagOptions { AutoClassify = false });
         await rag.DefineDomainAsync("docs");
@@ -2112,7 +2112,7 @@ public class RagKitTests
         var history = new List<ChatMessage>
         {
             new("user", "hola"),
-            new("assistant", "hola, Â¿en quÃ© puedo ayudarte?"),
+            new("assistant", "hola, ¿en qué puedo ayudarte?"),
         };
 
         var ans = await rag.AskAsync("contrato laboral", history, domain: "docs");
@@ -2137,16 +2137,16 @@ public class RagKitTests
 
         // Two independent calls with different histories over the SAME RagClient must
         // not leak state into each other (no _history field to mutate, unlike ChatSession).
-        await rag.AskAsync("q1", new[] { new ChatMessage("user", "primera conversaciÃ³n") }, domain: "docs");
+        await rag.AskAsync("q1", new[] { new ChatMessage("user", "primera conversación") }, domain: "docs");
         var firstConvoLength = answer.Last!.Count;
 
         await rag.AskAsync("q2", Array.Empty<ChatMessage>(), domain: "docs");
         var secondConvoLength = answer.Last!.Count;
 
-        Assert.True(secondConvoLength < firstConvoLength, "una historia vacÃ­a no deberÃ­a arrastrar turnos de la llamada anterior");
+        Assert.True(secondConvoLength < firstConvoLength, "una historia vacía no debería arrastrar turnos de la llamada anterior");
     }
 
-    // --- Fase 1: normalizaciÃ³n a Markdown (RagKit.Markdown) --------------------------
+    // --- Fase 1: normalización a Markdown (RagKit.Markdown) --------------------------
 
     [Fact]
     public void MarkdownNormalizers_registers_html_csv_docx_and_pdf()
@@ -2173,9 +2173,9 @@ public class RagKitTests
     [Fact]
     public void HtmlToMarkdown_converts_headings_and_tables()
     {
-        var html = "<h1>TÃ­tulo</h1><p>Texto</p><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>";
+        var html = "<h1>Título</h1><p>Texto</p><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>";
         var md = HtmlToMarkdown.ConvertHtml(html);
-        Assert.Contains("# TÃ­tulo", md);
+        Assert.Contains("# Título", md);
         Assert.Contains("|", md); // GithubFlavored renders the table with pipes
     }
 
@@ -2193,7 +2193,7 @@ public class RagKitTests
                 new DocumentFormat.OpenXml.Wordprocessing.ParagraphProperties(
                     new DocumentFormat.OpenXml.Wordprocessing.ParagraphStyleId { Val = "Heading1" }),
                 new DocumentFormat.OpenXml.Wordprocessing.Run(
-                    new DocumentFormat.OpenXml.Wordprocessing.Text("TÃ­tulo docx")));
+                    new DocumentFormat.OpenXml.Wordprocessing.Text("Título docx")));
             var table = new DocumentFormat.OpenXml.Wordprocessing.Table(
                 new DocumentFormat.OpenXml.Wordprocessing.TableRow(
                     new DocumentFormat.OpenXml.Wordprocessing.TableCell(new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
@@ -2211,7 +2211,7 @@ public class RagKitTests
         }
 
         var md = DocxToMarkdown.Convert(docxPath);
-        Assert.Contains("# TÃ­tulo docx", md);
+        Assert.Contains("# Título docx", md);
         Assert.Contains("| a | b |", md);
         Assert.Contains("| 1 | 2 |", md);
     }
@@ -2292,7 +2292,7 @@ public class RagKitTests
     {
         // Regression test: an earlier build used PdfPig's DocstrumBoundingBoxes for
         // page segmentation, which degrades catastrophically (empirically ~cubic) on
-        // pages with many duplicate/near-duplicate word coordinates â€” a real-world
+        // pages with many duplicate/near-duplicate word coordinates — a real-world
         // pattern in scanned/re-flowed PDFs (8000 such words took 4m44s). PdfToMarkdown
         // no longer calls that API at all, so this must stay well under a second.
         var tmp = Path.Combine(Path.GetTempPath(), "ragkit-md-" + Guid.NewGuid().ToString("N"));
@@ -2307,7 +2307,7 @@ public class RagKitTests
 
         var task = Task.Run(() => PdfToMarkdown.Convert(pdfPath));
         var winner = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(15)));
-        Assert.Same(task, winner); // "PdfToMarkdown no debe tardar mÃ¡s de unos segundos, ni siquiera con coordenadas degeneradas."
+        Assert.Same(task, winner); // "PdfToMarkdown no debe tardar más de unos segundos, ni siquiera con coordenadas degeneradas."
     }
 
     [Fact]
@@ -2373,11 +2373,11 @@ public class RagKitTests
         try
         {
             var text = PdfToMarkdown.Convert(pdfPath);
-            // El contenido se conserva (las celdas siguen ahÃ­)...
+            // El contenido se conserva (las celdas siguen ahí)...
             Assert.Contains("Factura de servicios profesionales", text);
             Assert.Contains("Consultoria fiscal", text);
             Assert.Contains("450,00 EUR", text);
-            // ...pero sin ninguna sintaxis Markdown de tÃ­tulo o tabla.
+            // ...pero sin ninguna sintaxis Markdown de título o tabla.
             Assert.DoesNotContain("## ", text);
             Assert.DoesNotContain("---", text);
             Assert.DoesNotContain("|", text);
@@ -2388,15 +2388,15 @@ public class RagKitTests
         }
     }
 
-    // --- Fase 2: MarkdownChunker estructural + tamaÃ±o variable por embedder -----------
+    // --- Fase 2: MarkdownChunker estructural + tamaño variable por embedder -----------
 
     [Fact]
     public void MarkdownChunker_groups_content_under_headings_with_breadcrumb()
     {
-        var md = "# Uno\n\nTexto de la secciÃ³n uno.\n\n## Dos\n\nTexto de la secciÃ³n dos.\n";
+        var md = "# Uno\n\nTexto de la sección uno.\n\n## Dos\n\nTexto de la sección dos.\n";
         var chunks = MarkdownChunker.Chunk(md, maxChars: 1000);
-        Assert.Contains(chunks, c => c.Breadcrumb == "Uno" && c.Text.Contains("secciÃ³n uno"));
-        Assert.Contains(chunks, c => c.Breadcrumb == "Uno > Dos" && c.Text.Contains("secciÃ³n dos"));
+        Assert.Contains(chunks, c => c.Breadcrumb == "Uno" && c.Text.Contains("sección uno"));
+        Assert.Contains(chunks, c => c.Breadcrumb == "Uno > Dos" && c.Text.Contains("sección dos"));
     }
 
     [Fact]
@@ -2416,10 +2416,10 @@ public class RagKitTests
     public void MarkdownChunker_falls_back_to_fixed_window_for_an_oversized_paragraph()
     {
         var longParagraph = string.Join(" ", Enumerable.Repeat("palabra", 300));
-        var md = $"# TÃ­tulo\n\n{longParagraph}\n";
+        var md = $"# Título\n\n{longParagraph}\n";
 
         var chunks = MarkdownChunker.Chunk(md, maxChars: 300);
-        Assert.True(chunks.Count > 1, "un pÃ¡rrafo mayor que maxChars debe subdividirse");
+        Assert.True(chunks.Count > 1, "un párrafo mayor que maxChars debe subdividirse");
         Assert.All(chunks, c => Assert.False(c.IsAtomicTable));
     }
 
@@ -2464,7 +2464,7 @@ public class RagKitTests
 
         Assert.Equal(1, largeBudgetChunks);
         Assert.True(smallBudgetChunks > largeBudgetChunks,
-            $"un presupuesto de chunk menor debe producir mÃ¡s chunks (small={smallBudgetChunks}, large={largeBudgetChunks})");
+            $"un presupuesto de chunk menor debe producir más chunks (small={smallBudgetChunks}, large={largeBudgetChunks})");
     }
 
     [Fact]
@@ -2472,7 +2472,7 @@ public class RagKitTests
     {
         var rows = string.Join("\n", Enumerable.Range(1, 60).Select(i => $"| fila{i} | valor{i} |"));
         var markdown = $"# Datos\n\n| columna a | columna b |\n|---|---|\n{rows}\n";
-        const string explanation = "ExplicaciÃ³n de la tabla: dos columnas, filas numeradas.";
+        const string explanation = "Explicación de la tabla: dos columnas, filas numeradas.";
         var classifierChat = new FakeChat(explanation);
 
         var embedder = new FakeEmbedder(maxChunkChars: 200); // well below the ~60-row table's length
@@ -2497,14 +2497,14 @@ public class RagKitTests
     public async Task IngestAsync_with_an_oversized_table_makes_no_tier2_call_when_EnableContextualEmbedding_is_off()
     {
         // Regression test: an earlier build made the table-explanation tier-2 call
-        // unconditionally, even with the (default, off) flag disabled â€” any document
+        // unconditionally, even with the (default, off) flag disabled — any document
         // with a table bigger than the chunk budget silently started blocking ingestion
         // on an LLM call nobody opted into, hanging folder ingestion when that LLM was
         // slow/unreachable. With the flag off, ingesting an oversized table must make
         // ZERO tier-2 calls.
         var rows = string.Join("\n", Enumerable.Range(1, 60).Select(i => $"| fila{i} | valor{i} |"));
         var markdown = $"# Datos\n\n| columna a | columna b |\n|---|---|\n{rows}\n";
-        var classifierChat = new FakeChat("no deberÃ­a llamarse nunca");
+        var classifierChat = new FakeChat("no debería llamarse nunca");
 
         var embedder = new FakeEmbedder(maxChunkChars: 200);
         var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
@@ -2527,7 +2527,7 @@ public class RagKitTests
     [Fact]
     public async Task IngestAsync_with_EnableContextualEmbedding_raises_similarity_for_queries_matching_only_the_documents_summary()
     {
-        var text = "El artÃ­culo catorce regula el permiso retribuido anual.";
+        var text = "El artículo catorce regula el permiso retribuido anual.";
         const string docSummary = "normativa vacaciones corporativas empleados senior";
         const string query = "normativa vacaciones corporativas"; // vocabulary disjoint from `text`
 
@@ -2552,13 +2552,13 @@ public class RagKitTests
         double scoreOff = await IngestAndScore(enableContextual: false);
 
         Assert.True(scoreOn > scoreOff,
-            $"con EnableContextualEmbedding activo la similitud deberÃ­a subir (on={scoreOn}, off={scoreOff})");
+            $"con EnableContextualEmbedding activo la similitud debería subir (on={scoreOn}, off={scoreOff})");
     }
 
     [Fact]
     public async Task GetDocumentSummaryAsync_returns_the_persisted_summary_only_when_the_flag_was_on()
     {
-        const string docSummary = "LÃ­nea uno.\nLÃ­nea dos.\nLÃ­nea tres.";
+        const string docSummary = "Línea uno.\nLínea dos.\nLínea tres.";
         var embedder = new FakeEmbedder();
         var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
         var store = new InMemoryVectorStore(dir);
@@ -2576,10 +2576,10 @@ public class RagKitTests
     public async Task IngestAsync_with_EnableContextualEmbedding_still_ingests_when_the_document_summary_call_hangs()
     {
         // Regression test: before this fix, a slow/unresponsive tier-2 endpoint could block
-        // ingestion for LlmConfig.TimeoutSeconds Ã— 3 retries (up to ~15 minutes by default)
+        // ingestion for LlmConfig.TimeoutSeconds × 3 retries (up to ~15 minutes by default)
         // per document, because the doc-summary call awaited the classifier's own retry
         // budget. ContextualEmbeddingTimeoutSeconds bounds it independently, and ingestion
-        // proceeds without the contextual prefix instead of hanging â€” this is what made
+        // proceeds without the contextual prefix instead of hanging — this is what made
         // KnowledgeVault's folder ingestion look permanently stuck behind a couple of slow
         // tier-2 calls with only two concurrent ingest workers.
         var hangingChat = new HangingChat();
@@ -2598,8 +2598,8 @@ public class RagKitTests
 
         Assert.False(result.Rejected);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10),
-            $"la ingesta no deberÃ­a esperar a un tier-2 colgado (tardÃ³ {sw.Elapsed})");
-        Assert.Null(await rag.GetDocumentSummaryAsync("d.txt")); // el resumen fallÃ³: no se persiste ninguno
+            $"la ingesta no debería esperar a un tier-2 colgado (tardó {sw.Elapsed})");
+        Assert.Null(await rag.GetDocumentSummaryAsync("d.txt")); // el resumen falló: no se persiste ninguno
     }
 
     [Fact]
@@ -2642,7 +2642,7 @@ public class RagKitTests
 
         var page = await rag.ListChunksAsync("tabla.txt", "docs");
         var tableChunk = Assert.Single(page.Items);
-        Assert.Contains("fila60", tableChunk.Text); // la tabla sobrevive aunque falle la explicaciÃ³n
+        Assert.Contains("fila60", tableChunk.Text); // la tabla sobrevive aunque falle la explicación
     }
 
     [Fact]
@@ -2665,18 +2665,18 @@ public class RagKitTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
     }
 
-    // --- GarantÃ­a: las 4 combinaciones markdown-real Ã— EnableContextualEmbedding ingestan ---
-    // Cubre, con fakes rÃ¡pidos y deterministas, la propiedad que se pidiÃ³ garantizar tras el
-    // incidente de producciÃ³n: la ingesta debe completarse tanto si el texto de entrada es
+    // --- Garantía: las 4 combinaciones markdown-real × EnableContextualEmbedding ingestan ---
+    // Cubre, con fakes rápidos y deterministas, la propiedad que se pidió garantizar tras el
+    // incidente de producción: la ingesta debe completarse tanto si el texto de entrada es
     // Markdown real (headings/tablas, como lo produce RagKit.Markdown) como si es texto plano
-    // (sin conversiÃ³n â€” el extractor de RagKit.Extractors o el fallback a texto plano), y tanto
-    // con EnableContextualEmbedding activo como desactivado. Cada test tambiÃ©n comprueba que
+    // (sin conversión — el extractor de RagKit.Extractors o el fallback a texto plano), y tanto
+    // con EnableContextualEmbedding activo como desactivado. Cada test también comprueba que
     // el resultado no fue rechazado y que produjo al menos un chunk.
 
     private const string MarkdownLikeText =
-        "# TÃ­tulo del documento\n\nPÃ¡rrafo introductorio con contenido normal.\n\n" +
-        "## SecciÃ³n\n\n| columna a | columna b |\n|---|---|\n| valor1 | valor2 |\n\n" +
-        "MÃ¡s texto de cierre tras la tabla.";
+        "# Título del documento\n\nPárrafo introductorio con contenido normal.\n\n" +
+        "## Sección\n\n| columna a | columna b |\n|---|---|\n| valor1 | valor2 |\n\n" +
+        "Más texto de cierre tras la tabla.";
 
     private const string PlainText =
         "Esto es texto plano sin ninguna sintaxis Markdown, tal y como lo produce un " +
@@ -2691,7 +2691,7 @@ public class RagKitTests
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
         var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
-            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 lÃ­neas"));
+            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 líneas"));
         await rag.DefineDomainAsync("docs");
 
         var result = await rag.IngestAsync(MarkdownLikeText, "md.txt", domain: "docs");
@@ -2708,7 +2708,7 @@ public class RagKitTests
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
         var rag = new RagClient(new RagOptions { EnableContextualEmbedding = true },
-            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 lÃ­neas"));
+            embedder, store, new FakeChat("ok"), new FakeChat("resumen de 3 líneas"));
         await rag.DefineDomainAsync("docs");
 
         var result = await rag.IngestAsync(PlainText, "plain.txt", domain: "docs");
@@ -2725,7 +2725,7 @@ public class RagKitTests
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
         var rag = new RagClient(new RagOptions { EnableContextualEmbedding = false },
-            embedder, store, new FakeChat("ok"), new FakeChat("no deberÃ­a llamarse"));
+            embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
         await rag.DefineDomainAsync("docs");
 
         var result = await rag.IngestAsync(MarkdownLikeText, "md.txt", domain: "docs");
@@ -2742,7 +2742,7 @@ public class RagKitTests
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
         var rag = new RagClient(new RagOptions { EnableContextualEmbedding = false },
-            embedder, store, new FakeChat("ok"), new FakeChat("no deberÃ­a llamarse"));
+            embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
         await rag.DefineDomainAsync("docs");
 
         var result = await rag.IngestAsync(PlainText, "plain.txt", domain: "docs");
@@ -2759,7 +2759,7 @@ public class RagKitTests
         const string mdExt = ".fake-md-on";
         const string plainExt = ".fake-md-off";
         FileExtractors.Register(mdExt, _ => MarkdownLikeText);
-        // plainExt: deliberately NOT registered â€” exercises the File.ReadAllTextAsync fallback.
+        // plainExt: deliberately NOT registered — exercises the File.ReadAllTextAsync fallback.
 
         var mdFile = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + mdExt);
         var plainFile = Path.Combine(Path.GetTempPath(), "ragkit-extract-" + Guid.NewGuid().ToString("N") + plainExt);
@@ -2770,7 +2770,7 @@ public class RagKitTests
         var dir = Path.Combine(Path.GetTempPath(), "ragkit-test-" + Guid.NewGuid().ToString("N"));
         var store = new InMemoryVectorStore(dir);
         await store.InitializeAsync(embedder.ModelId, embedder.Dimension);
-        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), new FakeChat("no deberÃ­a llamarse"));
+        var rag = new RagClient(new RagOptions(), embedder, store, new FakeChat("ok"), new FakeChat("no debería llamarse"));
         await rag.DefineDomainAsync("docs");
 
         var mdResult = await rag.IngestFileAsync(mdFile, "docs");
@@ -2825,7 +2825,7 @@ public class RagKitTests
     [Fact]
     public async Task ExtractAsync_stops_waiting_on_a_hung_sync_extractor_without_waiting_for_it_to_finish()
     {
-        // A synchronous extractor has no way to observe a token â€” ExtractAsync can only
+        // A synchronous extractor has no way to observe a token — ExtractAsync can only
         // give up WAITING on it, not stop the abandoned work itself (documented behavior,
         // contrast with the async-registered case above, which really does stop).
         const string ext = ".fake-sync-hung";
@@ -2848,7 +2848,7 @@ public class RagKitTests
         Assert.Equal("texto plano", await FileExtractors.ExtractAsync(tmp));
     }
 
-    // --- PdfToMarkdown: async/cancellable conversion (fase de diagnÃ³stico del cuelgue) --
+    // --- PdfToMarkdown: async/cancellable conversion (fase de diagnóstico del cuelgue) --
 
     [Fact]
     public async Task PdfToMarkdownConvertAsync_produces_the_same_output_as_the_sync_Convert_when_not_cancelled()
@@ -2878,7 +2878,7 @@ public class RagKitTests
         for (int p = 0; p < 3; p++)
         {
             var pg = b.AddPage(UglyToad.PdfPig.Content.PageSize.A4);
-            pg.AddText($"PÃ¡gina {p}", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
+            pg.AddText($"Página {p}", 12, new UglyToad.PdfPig.Core.PdfPoint(25, 700), font);
         }
         File.WriteAllBytes(pdfPath, b.Build());
 
@@ -2891,7 +2891,7 @@ public class RagKitTests
     public async Task IngestFileAsync_extraction_is_cancellable_via_the_async_registered_extractor()
     {
         // Regression test for the reported production hang: RagClient.IngestFileAsync's
-        // `ct` must cover extraction too, not just classification/embedding â€” otherwise a
+        // `ct` must cover extraction too, not just classification/embedding — otherwise a
         // slow/hung extractor can't be interrupted even by a caller that passes a token.
         const string ext = ".fake-async-ingest";
         FileExtractors.Register(ext, async (path, ct) =>
@@ -2910,6 +2910,6 @@ public class RagKitTests
         var sw = System.Diagnostics.Stopwatch.StartNew();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => rag.IngestFileAsync(tmp, domain: "docs", ct: cts.Token));
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), "IngestFileAsync debe respetar la cancelaciÃ³n durante la extracciÃ³n.");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), "IngestFileAsync debe respetar la cancelación durante la extracción.");
     }
 }

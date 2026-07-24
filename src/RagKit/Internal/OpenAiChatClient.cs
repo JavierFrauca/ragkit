@@ -33,8 +33,9 @@ internal sealed class OpenAiChatClient : IChatClient
     private readonly bool _supportsTools;
     private readonly bool _parseXmlToolCalls;
     private readonly ILogger _log;
+    private readonly ConcurrencyGate? _gate;
 
-    public OpenAiChatClient(string baseUrl, string apiKey, string model, HttpClient? http = null,
+    public OpenAiChatClient(string baseUrl, string apiKey, string model, ConcurrencyGate? gate = null, HttpClient? http = null,
         int timeoutSeconds = 300, bool supportsTools = true, bool? parseXmlToolCalls = null, ILogger? logger = null)
     {
         if (http is null) { _http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) }; }
@@ -46,11 +47,13 @@ internal sealed class OpenAiChatClient : IChatClient
         _supportsTools = supportsTools;
         _parseXmlToolCalls = parseXmlToolCalls ?? _xmlToolCallModels.Contains(model);
         _log = logger ?? NullLogger.Instance;
+        _gate = gate;
     }
 
     public async Task<string> CompleteAsync(IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
     {
         using var activity = ActivitySource.StartActivity("chat.complete");
+        using var llmSlot = _gate is not null ? await _gate.EnterLlmAsync(ct).ConfigureAwait(false) : null;
         activity?.SetTag("rag.model", _model);
         activity?.SetTag("rag.msg_count", messages.Count);
 
@@ -88,6 +91,7 @@ internal sealed class OpenAiChatClient : IChatClient
     public async IAsyncEnumerable<string> StreamAsync(IReadOnlyList<ChatMessage> messages, [EnumeratorCancellation] CancellationToken ct = default)
     {
         using var activity = ActivitySource.StartActivity("chat.stream");
+        using var llmSlot = _gate is not null ? await _gate.EnterLlmAsync(ct).ConfigureAwait(false) : null;
         activity?.SetTag("rag.model", _model);
         activity?.SetTag("rag.msg_count", messages.Count);
 
@@ -141,6 +145,7 @@ internal sealed class OpenAiChatClient : IChatClient
     public async Task<AgentTurn> NextAsync(IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools, CancellationToken ct = default)
     {
         using var activity = ActivitySource.StartActivity("chat.next");
+        using var llmSlot = _gate is not null ? await _gate.EnterLlmAsync(ct).ConfigureAwait(false) : null;
         activity?.SetTag("rag.model", _model);
         activity?.SetTag("rag.tool_count", tools.Count);
 
@@ -232,6 +237,11 @@ internal sealed class OpenAiChatClient : IChatClient
         IReadOnlyList<AgentMessage> messages, IReadOnlyList<ToolSpec> tools,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        using var activity = ActivitySource.StartActivity("chat.next_stream");
+        using var llmSlot = _gate is not null ? await _gate.EnterLlmAsync(ct).ConfigureAwait(false) : null;
+        activity?.SetTag("rag.model", _model);
+        activity?.SetTag("rag.tool_count", tools.Count);
+
         var msgArr = new JsonArray();
         foreach (var m in messages)
         {

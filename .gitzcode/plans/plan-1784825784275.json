@@ -11,22 +11,22 @@
     {
       "id": "step-2",
       "text": "2. Excepciones tipadas — jerarquía de excepciones (LlmException, StoreException, etc.) en vez de RagKitException genérica",
-      "status": "in_progress"
+      "status": "completed"
     },
     {
       "id": "step-3",
       "text": "3. Rate limiting interno — SemaphoreSlim para limitar llamadas concurrentes al LLM e ingestiones paralelas",
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "step-4",
       "text": "4. CI con docker-compose — tests de integración contra Qdrant/Postgres/SQL Server reales en CI",
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "step-5",
       "text": "5. Tests para conectores sin cobertura — proyectos de test para Onnx, Mcp, Extractors, Markdown, Postgres, SqlServer",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "id": "step-6",
@@ -95,5 +95,5 @@
     }
   ],
   "createdAt": "2026-07-23T16:56:24.275Z",
-  "updatedAt": "2026-07-23T21:42:40.442Z"
+  "updatedAt": "2026-07-24T19:06:32.285Z"
 }

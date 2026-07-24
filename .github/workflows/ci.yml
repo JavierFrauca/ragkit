@@ -21,8 +21,9 @@ jobs:
       - name: Build
         run: dotnet build RagKit.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true
       - name: Test
-        # Integration tests (Qdrant/Postgres/SQL Server/ONNX/LLM) self-skip when
-        # their service/model/key isn't present, so CI runs the offline suite.
+        # Unit tests run offline (InMemoryVectorStore, fake LLM clients).
+        # Integration tests self-skip when their service env vars are missing,
+        # which is the case here — they only run in the integration-tests job.
         run: dotnet test RagKit.slnx -c Release --no-build
       - name: Pack
         run: dotnet pack RagKit.slnx -c Release -o artifacts --no-build -p:ContinuousIntegrationBuild=true
@@ -30,3 +31,67 @@ jobs:
         with:
           name: nupkg
           path: artifacts/*.nupkg
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build-test
+    services:
+      # Service containers on GitHub Actions runner — equivalent to docker compose
+      # for the three backends. We use them instead of docker compose to avoid the
+      # overhead of installing docker compose on the runner.
+      qdrant:
+        image: qdrant/qdrant:v1.13.4
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd "curl -f http://localhost:6333/healthz || exit 1"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: ragkit
+          POSTGRES_USER: ragkit
+          POSTGRES_PASSWORD: ragkit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragkit -d ragkit || exit 1"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 5s
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Ragkit123!"
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Ragkit123!' -Q 'SELECT 1' || exit 1"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 30s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Restore
+        run: dotnet restore RagKit.slnx
+      - name: Build
+        run: dotnet build RagKit.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true
+      - name: Integration Tests
+        env:
+          RAGKIT_QDRANT_URL: http://127.0.0.1:6333
+          RAGKIT_POSTGRES_CONNECTION: Host=127.0.0.1;Port=5432;Database=ragkit;Username=ragkit;Password=ragkit
+          RAGKIT_SQLSERVER_CONNECTION: Server=127.0.0.1,1433;Database=ragkit;User Id=sa;Password=Ragkit123!;TrustServerCertificate=True
+        run: dotnet test RagKit.slnx -c Release --no-build

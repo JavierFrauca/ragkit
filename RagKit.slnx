@@ -16,6 +16,12 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RagKit.Dashboard.Tests/RagKit.Dashboard.Tests.csproj" />
+    <Project Path="tests/RagKit.Extractors.Tests/RagKit.Extractors.Tests.csproj" />
+    <Project Path="tests/RagKit.Markdown.Tests/RagKit.Markdown.Tests.csproj" />
+    <Project Path="tests/RagKit.Mcp.Tests/RagKit.Mcp.Tests.csproj" />
+    <Project Path="tests/RagKit.Onnx.Tests/RagKit.Onnx.Tests.csproj" />
+    <Project Path="tests/RagKit.Postgres.Tests/RagKit.Postgres.Tests.csproj" />
+    <Project Path="tests/RagKit.SqlServer.Tests/RagKit.SqlServer.Tests.csproj" />
     <Project Path="tests/RagKit.Tests/RagKit.Tests.csproj" />
   </Folder>
 </Solution>

@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace RagKit;
 
@@ -209,4 +209,20 @@ public sealed class RagOptions
 
     /// <summary>Optional logger factory for structured tracing.</summary>
     public ILoggerFactory? LoggerFactory { get; set; }
+
+    // --- concurrency ----------------------------------------------------------
+
+    /// <summary>
+    /// Maximum number of concurrent LLM calls across all tiers (answer, classification,
+    /// routing, guardrails, reranking). Calls beyond this limit wait in FIFO order.
+    /// Default 50: high enough for most workloads without throttling.
+    /// </summary>
+    public int MaxConcurrentLlmCalls { get; set; } = 50;
+
+    /// <summary>
+    /// Maximum number of parallel ingestion operations (IngestAsync/IngestFileAsync).
+    /// Calls beyond this limit wait in FIFO order. Default 5: embedding/LLM calls
+    /// inside ingestion are separately gated by <see cref="MaxConcurrentLlmCalls"/>.
+    /// </summary>
+    public int MaxConcurrentIngestions { get; set; } = 5;
 }
